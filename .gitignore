@@ -1,0 +1,7 @@
+data/
+*.log
+/tmp/
+.DS_Store
+README.md
+__pycache__/
+*.pyc

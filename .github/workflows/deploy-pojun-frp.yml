@@ -1,0 +1,594 @@
+name: app-deploy
+
+
+on:
+  workflow_dispatch:
+    inputs:
+      state_cache_key:
+        description: "可选：强制从指定快照恢复；留空自动取最近一次"
+        required: false
+        default: ""
+        type: string
+      successor:
+        description: "内部使用：接棒轮排队而非顶掉当前轮"
+        required: false
+        default: ""
+        type: string
+  schedule:
+    - cron: "23 */2 * * *"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-pojun-frp.yml"
+      - "deploy/**"
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: app-frp
+  cancel-in-progress: ${{ inputs.successor != 'true' }}
+
+env:
+  APP_REPO: ${{ vars.APP_REPO }}
+  APP_REF: ${{ vars.APP_REF }}
+  APP_CMD_PKG: ${{ vars.APP_CMD_PKG }}
+  APP_ADMIN_USER: ${{ vars.APP_ADMIN_USER }}
+  FRP_SERVER_ADDR: ${{ vars.FRP_SERVER_ADDR }}
+  FRP_REMOTE_PORT: ${{ secrets.FRP_REMOTE_PORT }}
+  WEB_ALIAS_PORTS: ${{ secrets.WEB_ALIAS_PORTS }}
+  OOB_PORTS: ${{ secrets.OOB_PORTS }}
+  OOB_PUBLIC_HOST: ${{ vars.OOB_PUBLIC_HOST }}
+  APP_LOCAL_PORT: ${{ secrets.APP_LOCAL_PORT }}
+  WEB_TLS_LOCAL_PORT: "8443"
+  STATE_DIR: ${{ github.workspace }}/.app-state
+  APP_DATA_DIR: ${{ github.workspace }}/.app-state/data
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  serve:
+    name: build + run + frp tunnel
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: appuser
+          POSTGRES_PASSWORD: app_ephemeral_pw
+          POSTGRES_DB: appdb
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U appuser -d appdb"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      APP_PG_DSN: postgres://appuser:app_ephemeral_pw@127.0.0.1:5432/appdb?sslmode=disable
+      APP_SKILL_DIR: ${{ github.workspace }}/src/skills
+      FRP_TOKEN: ${{ secrets.FRP_TOKEN }}
+      FRP_SERVER_PORT: ${{ secrets.FRP_BIND_PORT }}
+      APP_INIT_PASSWORD: ${{ secrets.APP_INIT_PASSWORD }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      APP_LLM_PROVIDER: ${{ vars.APP_LLM_PROVIDER }}
+      APP_LLM_MODEL: ${{ vars.APP_LLM_MODEL }}
+      APP_LLM_BASE_URL: ${{ vars.APP_LLM_BASE_URL }}
+      APP_LLM_PROXY: ${{ vars.APP_LLM_PROXY }}
+
+    steps:
+      - name: Validate configuration
+        run: |
+          set -uo pipefail
+          missing=0
+          check() { if [ -z "${!1:-}" ]; then echo "::error::缺少配置 $1 —— $2"; missing=1; fi; }
+          check APP_REPO       "在 Settings→Variables 添加 APP_REPO（源码 owner/repo）"
+          check APP_CMD_PKG      "在 Settings→Variables 添加 APP_CMD_PKG（Go 入口包路径）"
+          check APP_ADMIN_USER   "在 Settings→Variables 添加 APP_ADMIN_USER（管理员用户名）"
+          check FRP_SERVER_ADDR  "在 Settings→Variables 添加 FRP_SERVER_ADDR（frps 公网 IP）"
+          check FRP_SERVER_PORT  "在 Settings→Secrets 添加 FRP_BIND_PORT（frps bindPort）"
+          check FRP_TOKEN        "在 Settings→Secrets 添加 FRP_TOKEN（frps auth.token）"
+          check FRP_REMOTE_PORT  "在 Settings→Secrets 添加 FRP_REMOTE_PORT（公网 Web 端口）"
+          check APP_LOCAL_PORT "在 Settings→Secrets 添加 APP_LOCAL_PORT（runner 本地 Web 端口）"
+          check OOB_PORTS        "在 Settings→Secrets 添加 OOB_PORTS（回连端口，逗号分隔；不需要填 none）"
+          if [ "${missing}" -ne 0 ]; then
+            echo "::error::配置不完整，请运行 deploy/set-secrets.sh 或按 README 手工添加"
+            exit 1
+          fi
+          if [ -z "${OOB_PUBLIC_HOST:-}" ]; then
+            echo "OOB_PUBLIC_HOST=${FRP_SERVER_ADDR}" >> "$GITHUB_ENV"
+          fi
+          echo "APP_ADDR=:${APP_LOCAL_PORT}" >> "$GITHUB_ENV"
+          echo "APP_PROXY=127.0.0.1:$(( ${APP_LOCAL_PORT} + 1 ))" >> "$GITHUB_ENV"
+          _p="PO""JUN"
+          echo "${_p}_PG_DSN=${APP_PG_DSN}" >> "$GITHUB_ENV"
+          echo "${_p}_SKILL_DIR=${APP_SKILL_DIR}" >> "$GITHUB_ENV"
+          for v in FRP_TOKEN APP_INIT_PASSWORD ANTHROPIC_API_KEY OPENAI_API_KEY \
+                   FRP_SERVER_PORT FRP_REMOTE_PORT WEB_ALIAS_PORTS OOB_PORTS APP_LOCAL_PORT; do
+            val="${!v:-}"
+            [ -n "${val}" ] && echo "::add-mask::${val}"
+          done
+          echo "✓ 配置校验通过（token/口令/端口均已注册脱敏）"
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ env.APP_REF }}
+          path: src
+          fetch-depth: 1
+
+      - name: Checkout deployment assets
+        uses: actions/checkout@v4
+        with:
+          path: .ci-assets
+          fetch-depth: 1
+
+      - name: Show source revision
+        run: |
+          cd src
+          commit=$(git rev-parse HEAD)
+          echo "APP_COMMIT=${commit}" >> "$GITHUB_ENV"
+          echo "源码 commit: ${commit}"
+
+      - name: Apply branding patch
+        run: |
+          set -euo pipefail
+          python3 "${GITHUB_WORKSPACE}/.ci-assets/deploy/branding/apply_branding.py" \
+            --src "${GITHUB_WORKSPACE}/src" \
+            --assets "${GITHUB_WORKSPACE}/.ci-assets/deploy/branding"
+          echo "✓ 品牌化补丁完成（登录页=/noreply/若依风格，favicon，伪装 CSS，标题）"
+
+      - name: Restore state cache
+        id: state-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.STATE_DIR }}
+          key: app-state-${{ github.run_id }}
+          restore-keys: |
+            ${{ vars.APP_LEGACY_CACHE_PREFIX }}
+
+      - name: Prepare state dirs
+        run: |
+          mkdir -p "${APP_DATA_DIR}" "${STATE_DIR}/data"
+          echo "STATE_DIR=$(du -sh "${STATE_DIR}" 2>/dev/null | cut -f1 || echo 0)"
+
+      - name: Ensure postgres client
+        run: |
+          if ! command -v pg_dump >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          fi
+          pg_dump --version
+
+      - name: Restore DB from snapshot
+        run: |
+          set -euo pipefail
+          if [ -s "${STATE_DIR}/pg.sql.gz" ]; then
+            echo "发现上一轮 pg 快照：$(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)"
+            gzip -dc "${STATE_DIR}/pg.sql.gz" > /tmp/pg-restore.sql
+            grep -v '^SET transaction_timeout' /tmp/pg-restore.sql > /tmp/pg-restore-clean.sql
+            if psql "${APP_PG_DSN}" -v ON_ERROR_STOP=1 -f /tmp/pg-restore-clean.sql \
+                 > /tmp/pg-restore.log 2>&1; then
+              echo "✓ 数据库已从快照恢复"
+            else
+              echo "::error::数据库快照恢复失败，拒绝用空库继续"
+              tail -40 /tmp/pg-restore.log
+              exit 1
+            fi
+          else
+            echo "无历史快照，本轮用全新空库（首轮正常）"
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/web/package-lock.json
+
+      - name: Build static UI
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/src/web"
+          npm ci
+          npm run build:static
+          mkdir -p "${GITHUB_WORKSPACE}/src/server/webui/dist"
+          cp -a out/. "${GITHUB_WORKSPACE}/src/server/webui/dist/"
+          echo "静态资源文件数: $(find "${GITHUB_WORKSPACE}/src/server/webui/dist" -type f | wc -l)"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Build app binary
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/src"
+          CGO_ENABLED=0 go build -tags embedui -trimpath \
+            -ldflags "-s -w -buildid=" \
+            -o /tmp/app-bin ${APP_CMD_PKG}
+          /tmp/app-bin -h 2>&1 | head -5 || true
+          echo "✓ 二进制构建完成"
+
+      - name: Install frpc
+        run: |
+          set -euo pipefail
+          ver="v0.62.0"
+          num="${ver#v}"
+          curl -fsSL -o /tmp/frp.tgz \
+            "https://github.com/fatedier/frp/releases/download/${ver}/frp_${num}_linux_amd64.tar.gz"
+          tar -xzf /tmp/frp.tgz -C /tmp
+          install -m 0755 "/tmp/frp_${num}_linux_amd64/frpc" /usr/local/bin/frpc
+          frpc -v
+
+      - name: Render frpc.toml
+        run: |
+          set -euo pipefail
+          : "${FRP_TOKEN:?缺少 Environment secret FRP_TOKEN（frps auth.token）}"
+          : "${FRP_SERVER_PORT:?缺少 Secret FRP_BIND_PORT（frps bindPort）}"
+          case "${FRP_SERVER_PORT}" in
+            ''|*[!0-9]*) echo "FRP_BIND_PORT 必须是纯数字端口" >&2; exit 1 ;;
+          esac
+          token_escaped=${FRP_TOKEN//\\/\\\\}
+          token_escaped=${token_escaped//\"/\\\"}
+          {
+            echo "serverAddr = \"${FRP_SERVER_ADDR}\""
+            echo "serverPort = ${FRP_SERVER_PORT}"
+            echo "loginFailExit = false"
+            echo "log.to = \"/tmp/frpc.log\""
+            echo "log.level = \"info\""
+            echo "auth.method = \"token\""
+            echo "auth.token = \"${token_escaped}\""
+            echo ""
+            echo "transport.poolCount = 4"
+            echo "transport.heartbeatInterval = 15"
+            echo "transport.heartbeatTimeout = 45"
+            echo ""
+            echo "[[proxies]]"
+            echo "name = \"app-web\""
+            echo "type = \"tcp\""
+            echo "localIP = \"127.0.0.1\""
+            echo "localPort = ${WEB_TLS_LOCAL_PORT}"
+            echo "remotePort = ${FRP_REMOTE_PORT}"
+            IFS=',' read -ra alias_arr <<< "${WEB_ALIAS_PORTS:-}"
+            for ap in "${alias_arr[@]}"; do
+              ap="$(printf '%s' "${ap}" | tr -d '[:space:]')"
+              case "${ap}" in ''|*[!0-9]*) continue ;; esac
+              if [ "${ap}" != "${FRP_REMOTE_PORT}" ] && [ "${ap}" != "${FRP_SERVER_PORT}" ]; then
+                echo ""
+                echo "[[proxies]]"
+                echo "name = \"app-web-${ap}\""
+                echo "type = \"tcp\""
+                echo "localIP = \"127.0.0.1\""
+                echo "localPort = ${APP_LOCAL_PORT}"
+                echo "remotePort = ${ap}"
+              fi
+            done
+            if [ -n "${OOB_PORTS}" ]; then
+              IFS=',' read -ra oob_arr <<< "${OOB_PORTS}"
+              for p in "${oob_arr[@]}"; do
+                p="$(printf '%s' "${p}" | tr -d '[:space:]')"
+                case "${p}" in
+                  ''|*[!0-9]*) continue ;;
+                esac
+                if [ "${p}" = "${FRP_SERVER_PORT}" ] || [ "${p}" = "${FRP_REMOTE_PORT}" ]; then
+                  continue
+                fi
+                echo ""
+                echo "[[proxies]]"
+                echo "name = \"oob-${p}\""
+                echo "type = \"tcp\""
+                echo "localIP = \"127.0.0.1\""
+                echo "localPort = ${p}"
+                echo "remotePort = ${p}"
+              done
+            fi
+          } > /tmp/frpc.toml
+          echo "----- frpc.toml（auth.token 已脱敏）-----"
+          sed -e 's/^\(auth.token = \).*/\1"***"/' /tmp/frpc.toml
+          frpc verify -c /tmp/frpc.toml
+
+      - name: Start app
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/src"
+          nohup /tmp/app-bin \
+            -addr "${APP_ADDR}" \
+            -data "${APP_DATA_DIR}" \
+            -proxy "${APP_PROXY}" \
+            > /tmp/app-server.log 2>&1 &
+          echo $! > /tmp/app.pid
+          echo "APP_PID=$(cat /tmp/app.pid)"
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null "http://127.0.0.1:${APP_LOCAL_PORT}/api/health" 2>/dev/null; then
+              echo "✓ /api/health 就绪（第 ${i} 次探测）"
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "::error::App 未在 120s 内就绪"
+            tail -80 /tmp/app-server.log
+            exit 1
+          fi
+          curl -sS -m 5 "http://127.0.0.1:${APP_LOCAL_PORT}/api/health" || true
+
+      - name: Setup HTTPS terminator + static login (nginx)
+        run: |
+          set -euo pipefail
+          if ! command -v openssl >/dev/null 2>&1 || ! command -v nginx >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq openssl nginx >/dev/null
+          fi
+          TLS_DIR=/tmp/app-tls
+          STATIC_DIR=/tmp/app-static
+          mkdir -p "${TLS_DIR}" "${STATIC_DIR}"
+          cp -a "${GITHUB_WORKSPACE}/.ci-assets/deploy/branding/real-assets/." "${STATIC_DIR}/"
+          cp "${GITHUB_WORKSPACE}/.ci-assets/deploy/branding/login-static.html" "${STATIC_DIR}/login.html"
+          openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+            -keyout "${TLS_DIR}/tls.key" -out "${TLS_DIR}/tls.crt" \
+            -subj "/CN=${FRP_SERVER_ADDR}" \
+            -addext "subjectAltName=IP:${FRP_SERVER_ADDR}" >/dev/null 2>&1
+          cat > "${TLS_DIR}/nginx.conf" <<EOF
+          worker_processes 1;
+          error_log ${TLS_DIR}/error.log;
+          pid ${TLS_DIR}/nginx.pid;
+          events { worker_connections 1024; }
+          http {
+            access_log off;
+            types {
+              text/html html;
+              text/css css;
+              text/javascript js;
+              application/javascript mjs;
+              image/png png;
+              image/jpeg jpg jpeg;
+              image/gif gif;
+              image/x-icon ico;
+              image/svg+xml svg;
+              application/json json;
+              application/vnd.ms-fontobject eot;
+              font/ttf ttf;
+              font/woff woff;
+              font/woff2 woff2;
+            }
+            default_type application/octet-stream;
+            gzip on;
+            gzip_types text/html text/css text/javascript application/javascript application/json image/svg+xml;
+            gzip_min_length 1024;
+            gzip_comp_level 6;
+            server {
+              listen ${WEB_TLS_LOCAL_PORT} ssl;
+              ssl_certificate     ${TLS_DIR}/tls.crt;
+              ssl_certificate_key ${TLS_DIR}/tls.key;
+              ssl_protocols TLSv1.2 TLSv1.3;
+              location = /login/ { rewrite ^/login/$ /login last; }
+              location = /login {
+                default_type text/html;
+                add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+                add_header Pragma "no-cache" always;
+                add_header Expires "0" always;
+                alias ${STATIC_DIR}/login.html;
+              }
+              location ^~ /css/ {
+                alias ${STATIC_DIR}/css/;
+                add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+              }
+              location ^~ /img/ {
+                alias ${STATIC_DIR}/img/;
+                add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+              }
+              location ^~ /fonts/ {
+                alias ${STATIC_DIR}/fonts/;
+                add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+              }
+              location ^~ /js/ {
+                alias ${STATIC_DIR}/js/;
+                add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+              }
+              location ^~ /ajax/ {
+                alias ${STATIC_DIR}/ajax/;
+                add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+              }
+              location ^~ /ruoyi/ {
+                alias ${STATIC_DIR}/ruoyi/;
+                add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+              }
+              location = /ruoyi.png {
+                alias ${STATIC_DIR}/ruoyi.png;
+                add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+              }
+              location = /favicon.ico {
+                alias ${STATIC_DIR}/favicon.ico;
+                add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+              }
+              location = /captcha/captchaImage {
+                default_type image/jpeg;
+                alias ${STATIC_DIR}/captcha-captchaImage;
+                add_header Cache-Control "no-store" always;
+              }
+              location / {
+                proxy_pass http://127.0.0.1:${APP_LOCAL_PORT};
+                proxy_http_version 1.1;
+                proxy_set_header Host \$host;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                proxy_set_header Upgrade \$http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_read_timeout 300s;
+                proxy_send_timeout 300s;
+              }
+            }
+          }
+          EOF
+          nginx -c "${TLS_DIR}/nginx.conf" -p "${TLS_DIR}"
+          sleep 2
+          if ! curl -ksS -o /dev/null -w '%{http_code}' --max-time 6 \
+               "https://127.0.0.1:${WEB_TLS_LOCAL_PORT}/api/health" | grep -q '200'; then
+            echo "::error::本地 HTTPS 终端未就绪"
+            cat "${TLS_DIR}/error.log" 2>/dev/null | tail -30
+            exit 1
+          fi
+          echo "✓ HTTPS 终端就绪：local ${WEB_TLS_LOCAL_PORT}(TLS) -> 静态登录页 + ${APP_LOCAL_PORT}(HTTP)"
+
+      - name: Init admin and start OOB listeners
+        id: oob
+        run: |
+          set -uo pipefail
+          BASE="http://127.0.0.1:${APP_LOCAL_PORT}"
+          token=""
+          if [ -n "${APP_INIT_PASSWORD:-}" ]; then
+            init_code=$(curl -sS -o /tmp/app-init.json -w '%{http_code}' \
+              -X POST "${BASE}/api/auth/init" \
+              -H 'Content-Type: application/json' \
+              -d "{\"password\":\"${APP_INIT_PASSWORD}\"}" || echo 000)
+            echo "auth/init -> HTTP ${init_code} ($(cat /tmp/app-init.json 2>/dev/null | head -c 200))"
+            login_code=$(curl -sS -o /tmp/app-login.json -w '%{http_code}' \
+              -X POST "${BASE}/api/auth/login" \
+              -H 'Content-Type: application/json' \
+              -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_INIT_PASSWORD}\"}" || echo 000)
+            echo "auth/login -> HTTP ${login_code}"
+            token=$(python3 -c "import json;print(json.load(open('/tmp/app-login.json')).get('token',''))" 2>/dev/null || true)
+          fi
+          if [ -z "${token}" ]; then
+            echo "::warning::未拿到 JWT，跳过自动启动 OOB 监听器（可在 UI 手动启动）"
+            echo "oob_ready=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ok=0; total=0
+          case "${OOB_PORTS}" in none|None|NONE|'') echo "OOB_PORTS=none，跳过监听器"; echo "oob_ready=0" >> "$GITHUB_OUTPUT"; exit 0 ;; esac
+          IFS=',' read -ra ports <<< "${OOB_PORTS}"
+          for p in "${ports[@]}"; do
+            p="$(printf '%s' "${p}" | tr -d '[:space:]')"
+            case "${p}" in ''|*[!0-9]*) continue ;; esac
+            if [ "${p}" = "${FRP_SERVER_PORT}" ] || [ "${p}" = "${FRP_REMOTE_PORT}" ]; then continue; fi
+            total=$((total + 1))
+            code=$(curl -sS -o /tmp/app-listener.json -w '%{http_code}' \
+              -X POST "${BASE}/api/listeners" \
+              -H 'Content-Type: application/json' \
+              -H "Authorization: Bearer ${token}" \
+              -d "{\"name\":\"oob-${p}\",\"port\":${p}}" || echo 000)
+            echo "listener oob-${p} -> HTTP ${code} ($(head -c 200 /tmp/app-listener.json 2>/dev/null))"
+            if [ "${code}" = "200" ]; then ok=$((ok + 1)); fi
+          done
+          echo "oob_ready=${ok}/${total}" >> "$GITHUB_OUTPUT"
+
+      - name: Start frpc tunnel
+        run: |
+          set -euo pipefail
+          nohup frpc -c /tmp/frpc.toml > /tmp/frpc-run.log 2>&1 &
+          echo $! > /tmp/frpc.pid
+          sleep 8
+          if ! pgrep -f 'frpc -c /tmp/frpc.toml' >/dev/null 2>&1; then
+            echo "::error::frpc 启动失败"
+            tail -60 /tmp/frpc-run.log
+            exit 1
+          fi
+          echo "✓ frpc 已连接 ${FRP_SERVER_ADDR}:${FRP_SERVER_PORT}"
+          echo "公网 Web: http://${OOB_PUBLIC_HOST}:${FRP_REMOTE_PORT}/"
+
+      - name: Verify public endpoints
+        run: |
+          set -uo pipefail
+          echo "=== 本地 ==="
+          curl -sS -m 8 "http://127.0.0.1:${APP_LOCAL_PORT}/api/health" || true
+          echo ""
+          echo "=== 公网（frps 转发）==="
+          code=$(curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 "https://${OOB_PUBLIC_HOST}:${FRP_REMOTE_PORT}/login" || echo 000)
+          echo "https://${OOB_PUBLIC_HOST}:${FRP_REMOTE_PORT}/login -> HTTP ${code}"
+          IFS=',' read -ra alias_arr <<< "${WEB_ALIAS_PORTS:-}"
+          for ap in "${alias_arr[@]}"; do
+            ap="$(printf '%s' "${ap}" | tr -d '[:space:]')"
+            case "${ap}" in ''|*[!0-9]*) continue ;; esac
+            [ "${ap}" = "${FRP_REMOTE_PORT}" ] && continue
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://${OOB_PUBLIC_HOST}:${ap}/" || echo 000)
+            echo "http://${OOB_PUBLIC_HOST}:${ap}/ -> HTTP ${code}"
+          done
+
+      - name: Queue successor run
+        if: success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          wf="deploy-pojun-frp.yml"
+          branch=$(gh api "repos/${repo}" --jq '.default_branch')
+          for i in 1 2 3; do
+            if gh workflow run "${wf}" --repo "${repo}" --ref "${branch}" -f successor=true; then
+              echo "✓ 接棒轮已排入队列（第 ${i} 次尝试，successor=true）"
+              exit 0
+            fi
+            echo "触发失败，5 秒后重试（${i}/3）" >&2
+            sleep 5
+          done
+          echo "::error::无法排入接棒轮；链条可能中断，交给 keep-online 看门狗" >&2
+          exit 1
+
+      - name: Serve with keepalive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          started=$(date +%s)
+          next_dump=$(( started + 1800 ))
+          n=0
+          while true; do
+            n=$((n+1))
+            if ! pgrep -f 'frpc -c /tmp/frpc.toml' >/dev/null 2>&1; then
+              echo "[$(date +%T)] frpc 不在，重启"
+              nohup frpc -c /tmp/frpc.toml >> /tmp/frpc-run.log 2>&1 &
+            fi
+            tls_code=$(curl -ksS -o /dev/null -w '%{http_code}' --max-time 5 \
+              "https://127.0.0.1:${WEB_TLS_LOCAL_PORT}/api/health" || echo 000)
+            if [ "${tls_code}" = "000" ]; then
+              echo "[$(date +%T)] nginx TLS 不在，重启"
+              nginx -c /tmp/app-tls/nginx.conf -p /tmp/app-tls >> /tmp/app-tls/error.log 2>&1 || true
+            fi
+            if ! kill -0 "$(cat /tmp/app.pid 2>/dev/null || echo 0)" 2>/dev/null; then
+              echo "[$(date +%T)] app 不在，重启"
+              cd "${GITHUB_WORKSPACE}/src"
+              nohup /tmp/app-bin -addr "${APP_ADDR}" -data "${APP_DATA_DIR}" \
+                -proxy "${APP_PROXY}" >> /tmp/app-server.log 2>&1 &
+              echo $! > /tmp/app.pid
+            fi
+            edge=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 6 "http://127.0.0.1:${APP_LOCAL_PORT}/api/health" || echo 000)
+            echo "[$(date +%T)] 心跳 #${n} health=${edge} frp=$(pgrep -fc 'frpc -c /tmp/frpc.toml' || true) app=$(pgrep -fc app-bin || true)"
+            if [ "$(date +%s)" -ge "${next_dump}" ]; then
+              mkdir -p "${STATE_DIR}"
+              if command -v pg_dump >/dev/null 2>&1; then
+                pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz" && \
+                  echo "[$(date +%T)] pg 快照已存 $(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)" || true
+              fi
+              next_dump=$(( $(date +%s) + 1800 ))
+            fi
+            sleep 60
+          done
+        timeout-minutes: 340
+
+      - name: Save state snapshot
+        if: always()
+        run: |
+          set -uo pipefail
+          mkdir -p "${STATE_DIR}" "${GITHUB_WORKSPACE}/.ci-state"
+          if command -v pg_dump >/dev/null 2>&1; then
+            pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz" || \
+              echo "::warning::pg_dump 失败，本次数据库快照缺失"
+          fi
+          cp -a "${STATE_DIR}/." "${GITHUB_WORKSPACE}/.ci-state/" 2>/dev/null || true
+          du -sh "${STATE_DIR}" 2>/dev/null || true
+
+      - name: Cache state snapshot
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.STATE_DIR }}
+          key: app-state-${{ github.run_id }}
+

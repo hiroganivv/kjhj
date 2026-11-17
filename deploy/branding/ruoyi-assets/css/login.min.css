@@ -1,0 +1,30 @@
+/* 若依伪装：login.min.css —— 完整复刻若依登录页视觉 */
+.signin{background:#2f4054}
+.signin .signinpanel{width:1000px;max-width:94%;margin:0 auto;padding:0}
+.signinpanel{position:relative}
+.signinpanel .row{display:flex;align-items:center;min-height:100vh;margin:0}
+.signin-info{text-align:center;color:#fff}
+.signin-info .logopanel{margin-bottom:24px}
+.signin-info .logopanel h1{margin:0}
+.signin-info .logopanel img{max-width:180px;max-height:70px}
+.signin-info h4{font-size:20px;font-weight:400;text-shadow:0 1px 3px rgba(0,0,0,.3)}
+.signin-info h4 strong{font-weight:700}
+.signin-info ul{list-style:none;padding:0;margin:18px 0 0;display:inline-block;text-align:left}
+.signin-info ul li{font-size:14px;line-height:2;color:#e8eef3}
+.signin-info ul li .fa-arrow-circle-o-right{color:#1ab394;margin-right:8px}
+.signinpanel form{background:rgba(255,255,255,.96);padding:28px 30px;border-radius:4px;box-shadow:0 8px 30px rgba(0,0,0,.2)}
+.signinpanel form h4{font-size:16px;color:#333;margin-bottom:6px}
+.signinpanel form p{font-size:12px;color:#999;margin-bottom:18px}
+.signinpanel form .form-control{margin-bottom:14px}
+.signinpanel form .checkbox-custom{margin:6px 0 16px;color:#666;font-size:13px}
+.signinpanel form .checkbox-custom input{margin-right:6px;vertical-align:middle}
+.imgcode{height:34px;border:1px solid #ccc;border-radius:4px;cursor:pointer;background:#f8f8f8}
+.btn-success{background-color:#1ab394;border-color:#1ab394;color:#fff}
+.btn-success:hover{background-color:#18a689;border-color:#18a689}
+.signup-footer{position:absolute;left:0;right:0;bottom:28px;text-align:center;color:rgba(255,255,255,.85);font-size:12px;text-shadow:0 1px 3px rgba(0,0,0,.25)}
+label.error{color:#c9302c;font-size:12px;margin-top:-10px;margin-bottom:8px}
+@media (max-width:767px){
+  .signinpanel .row{display:block;padding-top:40px}
+  .signin-info{padding:20px 0}
+  .col-sm-7,.col-sm-5,.col-xs-6{float:none;width:100%}
+}

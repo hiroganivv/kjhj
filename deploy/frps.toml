@@ -1,0 +1,17 @@
+
+bindPort = {{ .Envs.FRP_BIND_PORT }}
+
+log.to = "/var/log/frps.log"
+log.level = "info"
+log.maxDays = 7
+
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+
+allowPorts = [
+]
+
+webServer.addr = "127.0.0.1"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "CHANGE_ME"

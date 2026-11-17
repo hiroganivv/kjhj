@@ -1,0 +1,124 @@
+/* 若依风格登录页视觉（纯 CSS，背景用本地 login-background.jpg）。
+   图片由 apply_branding.py 放到 web/public/login-background.jpg。 */
+.ry-login-wrap {
+  position: relative;
+  min-height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+}
+.ry-checking { min-height: 100vh; display: flex; align-items: center; justify-content: center; color: #fff; }
+.ry-bg {
+  position: absolute;
+  inset: 0;
+  background: #c9d4b8 url("/login-background.jpg") center center / cover no-repeat;
+}
+.ry-left {
+  position: absolute;
+  left: 22%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  color: #2f7d8c;
+}
+.ry-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  margin-bottom: 18px;
+}
+.ry-welcome {
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  text-shadow: 0 1px 4px rgba(0,0,0,.25);
+  margin-bottom: 14px;
+}
+.ry-features {
+  list-style: none;
+  margin: 0;
+  padding: 10px 16px;
+  display: inline-block;
+  text-align: left;
+  border: 1px solid rgba(255,255,255,.6);
+  border-radius: 3px;
+  background: rgba(255,255,255,.18);
+}
+.ry-features li { color: #fff; font-size: 12px; line-height: 1.9; text-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.ry-feature-dot { display: inline-block; width: 14px; color: #7fc9d6; margin-right: 4px; }
+.ry-card {
+  position: absolute;
+  right: 18%;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 260px;
+  padding: 22px 24px 24px;
+  background: rgba(255, 255, 255, .42);
+  border: 1px solid rgba(255, 255, 255, .55);
+  border-radius: 4px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .08);
+}
+.ry-card-title { color: #666; font-size: 13px; margin-bottom: 14px; }
+.ry-field {
+  position: relative;
+  margin-bottom: 12px;
+  background: #fff;
+  border: 1px solid #d9d9d9;
+  border-radius: 2px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+}
+.ry-field input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #333;
+  font-size: 13px;
+  padding-left: 10px;
+}
+.ry-field input[readonly] { color: #555; }
+.ry-field .ry-ico {
+  width: 32px;
+  text-align: center;
+  color: #8a8a8a;
+  font-size: 15px;
+  flex: none;
+}
+.ry-remember { display: inline-flex; align-items: center; gap: 5px; color: #666; font-size: 12px; margin: 2px 0 10px; }
+.ry-remember input { accent-color: #1ab394; }
+.ry-submit {
+  width: 100%;
+  height: 34px;
+  margin-top: 2px;
+  border: 0;
+  border-radius: 2px;
+  background: #1ab394;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+.ry-submit:disabled { opacity: .7; cursor: not-allowed; }
+.ry-submit:hover:not(:disabled) { background: #18a689; }
+.ry-error { color: #c9302c; font-size: 12px; margin: -4px 0 8px; }
+.ry-footer {
+  position: absolute;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, .9);
+  font-size: 12px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+  white-space: nowrap;
+}
+@media (max-width: 720px) {
+  .ry-left { left: 50%; top: 18%; }
+  .ry-card { right: auto; left: 50%; top: 60%; transform: translate(-50%, -50%); width: 82%; }
+}

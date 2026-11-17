@@ -1,0 +1,28 @@
+
+serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
+serverPort = {{ .Envs.FRP_SERVER_PORT }}
+loginFailExit = false
+
+log.to = "/tmp/frpc.log"
+log.level = "info"
+
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+
+transport.poolCount = 4
+transport.heartbeatInterval = 15
+transport.heartbeatTimeout = 45
+
+[[proxies]]
+name = "app-web"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = {{ .Envs.APP_LOCAL_PORT }}
+remotePort = {{ .Envs.FRP_REMOTE_PORT }}
+
+[[proxies]]
+name = "oob-EXAMPLE"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = {{ .Envs.OOB_PORT_EXAMPLE }}
+remotePort = {{ .Envs.OOB_PORT_EXAMPLE }}

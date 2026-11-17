@@ -1,0 +1,48 @@
+name: app-keep-online
+
+
+on:
+  schedule:
+    - cron: "3,13,23,33,43,53 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: app-keep-online
+  cancel-in-progress: true
+
+jobs:
+  ensure:
+    name: ensure deploy job is running
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check and restart if needed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          wf="deploy-pojun-frp.yml"
+          branch=$(gh api "repos/${repo}" --jq '.default_branch')
+          active=$(gh api "repos/${repo}/actions/workflows/${wf}/runs?per_page=20" \
+            --jq '[.workflow_runs[]
+                   | select(.status=="queued" or .status=="in_progress" or .status=="pending")]
+                  | length')
+          echo "主 workflow 活跃 run 数: ${active}（默认分支 ${branch}）"
+          if [ "${active}" -gt 0 ]; then
+            echo "已有运行中的部署，本次不重复触发"
+            exit 0
+          fi
+          echo "::warning::没有活跃部署，触发 workflow_dispatch 拉起一轮"
+          gh workflow run "${wf}" --repo "${repo}" --ref "${branch}"
+          echo "已触发，下一轮将在数分钟内完成构建并接管隧道"
+          {
+            echo "### 看门狗"
+            echo ""
+            echo "- 检查时刻：$(date -u '+%F %T UTC')"
+            echo "- 主 workflow 活跃 run：${active} → 已触发新一轮"
+          } >> "$GITHUB_STEP_SUMMARY"
