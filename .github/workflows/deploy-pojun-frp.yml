@@ -1,4 +1,4 @@
-name: pojun-deploy-frp
+name: app-deploy
 
 
 on:
@@ -11,11 +11,6 @@ on:
         type: string
       successor:
         description: "内部使用：接棒轮排队而非顶掉当前轮"
-        required: false
-        default: ""
-        type: string
-      recover_data:
-        description: "内部使用：从旧缓存导出数据快照"
         required: false
         default: ""
         type: string
@@ -186,37 +181,6 @@ jobs:
           else
             echo "无历史快照，本轮用全新空库（首轮正常）"
           fi
-
-      - name: Recover legacy data snapshot
-        if: inputs.recover_data == 'true'
-        run: |
-          set -euo pipefail
-          CID="${{ inputs.state_cache_key }}"
-          [ -n "${CID}" ] || { echo "::error::需要 state_cache_key 指定 cache ID"; exit 1; }
-          echo "从底层 cache service 下载 cache id=${CID}"
-          API="${ACTIONS_CACHE_URL}_apis/artifactcache/caches/${CID}"
-          JSON=$(curl -sS --fail -H "Authorization: Bearer ${ACTIONS_RUNTIME_TOKEN}" \
-            -H "Accept: application/json;api-version=6.0-preview.1" "${API}")
-          echo "meta: $(echo "${JSON}" | head -c 200)"
-          URL=$(python3 -c "import json,sys;print(json.load(sys.stdin).get('archiveLocation',''))" <<< "${JSON}")
-          [ -n "${URL}" ] || { echo "::error::未拿到 signed URL"; exit 1; }
-          mkdir -p /tmp/legacy-snap
-          curl -sSL --fail "${URL}" -o /tmp/legacy-snap/cache.tzst
-          echo "downloaded: $(du -sh /tmp/legacy-snap/cache.tzst | cut -f1)"
-          tar -xf /tmp/legacy-snap/cache.tzst -P -C /tmp/legacy-snap --use-compress-program unzstd || \
-            tar -xf /tmp/legacy-snap/cache.tzst -P -C /tmp/legacy-snap
-          echo "=== 解压内容 ==="; find /tmp/legacy-snap -maxdepth 3 -type f | head -20
-          mkdir -p /tmp/export
-          find /tmp/legacy-snap -name 'pg.sql.gz' -exec cp {} /tmp/export/ \; 2>/dev/null || true
-          ls -la /tmp/export/
-      - name: Upload recovered snapshot
-        if: inputs.recover_data == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: recovered-data
-          path: /tmp/export/
-          if-no-files-found: warn
-          retention-days: 7
 
       - name: Setup Node
         uses: actions/setup-node@v4
