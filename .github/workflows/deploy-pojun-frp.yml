@@ -1,4 +1,4 @@
-name: app-deploy
+name: pojun-deploy-frp
 
 
 on:
@@ -181,6 +181,15 @@ jobs:
           else
             echo "无历史快照，本轮用全新空库（首轮正常）"
           fi
+
+      - name: Export snapshot artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-snapshot
+          path: ${{ env.STATE_DIR }}/pg.sql.gz
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Setup Node
         uses: actions/setup-node@v4
