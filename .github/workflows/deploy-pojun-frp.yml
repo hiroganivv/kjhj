@@ -197,7 +197,7 @@ jobs:
       - name: Restore DB from snapshot
         run: |
           set -euo pipefail
-          if [ -s "${STATE_DIR}/pg.sql.gz" ]; then
+          if [ -s "${STATE_DIR}/pg.sql.gz" ] && gzip -t "${STATE_DIR}/pg.sql.gz" 2>/dev/null; then
             echo "发现上一轮 pg 快照：$(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)"
             gzip -dc "${STATE_DIR}/pg.sql.gz" > /tmp/pg-restore.sql
             grep -v '^SET transaction_timeout' /tmp/pg-restore.sql > /tmp/pg-restore-clean.sql
@@ -632,7 +632,8 @@ jobs:
             if [ "$(date +%s)" -ge "${next_dump}" ]; then
               mkdir -p "${STATE_DIR}"
               if command -v pg_dump >/dev/null 2>&1; then
-                if pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz.tmp"; then
+                if pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz.tmp" && \
+                   gzip -t "${STATE_DIR}/pg.sql.gz.tmp" 2>/dev/null; then
                   if [ "$(stat -c%s "${STATE_DIR}/pg.sql.gz.tmp" 2>/dev/null || echo 0)" -gt 120000 ]; then
                     CUR_SUM=$(md5sum "${STATE_DIR}/pg.sql.gz.tmp" 2>/dev/null | cut -d' ' -f1)
                     if [ "${CUR_SUM}" != "${LAST_SUM}" ]; then
