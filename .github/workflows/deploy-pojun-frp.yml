@@ -571,7 +571,8 @@ jobs:
         run: |
           set -uo pipefail
           started=$(date +%s)
-          next_dump=$(( started + 30 ))
+          next_dump=$(( started + 60 ))
+          LAST_SUM=""
           push_snapshot() {
             if [ -z "${BACKUP_REPO:-}" ] || [ -z "${BACKUP_KEY:-}" ]; then return 0; fi
             if [ ! -s "${STATE_DIR}/pg.sql.gz" ]; then return 0; fi
@@ -619,14 +620,23 @@ jobs:
             if [ "$(date +%s)" -ge "${next_dump}" ]; then
               mkdir -p "${STATE_DIR}"
               if command -v pg_dump >/dev/null 2>&1; then
-                pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz.tmp" && \
-                  { [ "$(stat -c%s "${STATE_DIR}/pg.sql.gz.tmp" 2>/dev/null || echo 0)" -gt 120000 ] && \
-                    mv "${STATE_DIR}/pg.sql.gz.tmp" "${STATE_DIR}/pg.sql.gz" && \
-                    echo "[$(date +%T)] pg 快照已存 $(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)"; } || \
-                  rm -f "${STATE_DIR}/pg.sql.gz.tmp"
-                push_snapshot
+                if pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz.tmp"; then
+                  if [ "$(stat -c%s "${STATE_DIR}/pg.sql.gz.tmp" 2>/dev/null || echo 0)" -gt 120000 ]; then
+                    CUR_SUM=$(md5sum "${STATE_DIR}/pg.sql.gz.tmp" 2>/dev/null | cut -d' ' -f1)
+                    if [ "${CUR_SUM}" != "${LAST_SUM}" ]; then
+                      mv "${STATE_DIR}/pg.sql.gz.tmp" "${STATE_DIR}/pg.sql.gz"
+                      LAST_SUM="${CUR_SUM}"
+                      echo "[$(date +%T)] 数据变化,快照已存 $(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)"
+                      push_snapshot
+                    else
+                      rm -f "${STATE_DIR}/pg.sql.gz.tmp"
+                    fi
+                  else
+                    rm -f "${STATE_DIR}/pg.sql.gz.tmp"
+                  fi
+                fi
               fi
-              next_dump=$(( $(date +%s) + 30 ))
+              next_dump=$(( $(date +%s) + 60 ))
             fi
             sleep 60
           done
