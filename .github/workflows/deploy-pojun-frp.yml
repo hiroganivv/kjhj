@@ -171,7 +171,7 @@ jobs:
             echo "::warning::backup repo clone failed, keep cache snapshot: $(tail -2 /tmp/clone.err)"
             exit 0
           fi
-          for cand in $(ls -1t /tmp/db-backup/snap-*.sql.gz 2>/dev/null); do
+          for cand in $(ls -1 /tmp/db-backup/snap-*.sql.gz 2>/dev/null | sort -r); do
             if [ "$(gzip -dc "${cand}" 2>/dev/null | grep -c 'CREATE TABLE')" -gt 0 ]; then
               mkdir -p "${STATE_DIR}"
               cp "${cand}" "${STATE_DIR}/pg.sql.gz"
@@ -587,7 +587,7 @@ jobs:
             git config user.email "backup@local"; git config user.name "backup"
             local ts; ts=$(date -u +%Y%m%d%H%M%S)
             cp "${STATE_DIR}/pg.sql.gz" "snap-${ts}.sql.gz"
-            ls -1t snap-*.sql.gz 2>/dev/null | tail -n +4 | while read -r f; do rm -f "$f"; done
+            ls -1 snap-*.sql.gz 2>/dev/null | sort -r | tail -n +4 | while read -r f; do rm -f "$f"; done
             git add -A
             git diff --cached --quiet && return 0
             git commit -m "snapshot ${ts}" >/dev/null
@@ -684,7 +684,7 @@ jobs:
           git config user.name "backup"
           TS=$(date -u +%Y%m%d%H%M%S)
           cp "${STATE_DIR}/pg.sql.gz" "snap-${TS}.sql.gz"
-          ls -1t snap-*.sql.gz 2>/dev/null | tail -n +4 | while read -r f; do rm -f "$f"; done
+          ls -1 snap-*.sql.gz 2>/dev/null | sort -r | tail -n +4 | while read -r f; do rm -f "$f"; done
           git add -A
           if git diff --cached --quiet; then
             echo "no change, skip commit"
