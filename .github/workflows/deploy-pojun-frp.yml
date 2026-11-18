@@ -180,7 +180,7 @@ jobs:
             fi
             echo "skip invalid snapshot: $(basename "${cand}")"
           done
-          echo "no valid snapshot in backup repo, keep cache snapshot
+          echo "no valid snapshot in backup repo, keep cache snapshot"
 
       - name: Prepare state dirs
         run: |
