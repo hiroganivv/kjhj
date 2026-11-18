@@ -238,11 +238,19 @@ jobs:
 
       - name: Build app binary
         run: |
-          set -euo pipefail
+          set -uo pipefail
           cd "${GITHUB_WORKSPACE}/src"
-          CGO_ENABLED=0 go build -tags embedui -trimpath \
-            -ldflags "-s -w -buildid=" \
-            -o /tmp/app-bin ${APP_CMD_PKG}
+          built=0
+          for attempt in 1 2 3; do
+            if CGO_ENABLED=0 go build -tags embedui -trimpath \
+                 -ldflags "-s -w -buildid=" \
+                 -o /tmp/app-bin ${APP_CMD_PKG}; then
+              built=1; break
+            fi
+            echo "::warning::build attempt ${attempt} failed, retrying in 20s"
+            sleep 20
+          done
+          [ "${built}" -eq 1 ] || { echo "::error::build failed after 3 attempts"; exit 1; }
           /tmp/app-bin -h 2>&1 | head -5 || true
           echo "✓ 二进制构建完成"
 
@@ -543,7 +551,7 @@ jobs:
           done
 
       - name: Queue successor run
-        if: success()
+        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
