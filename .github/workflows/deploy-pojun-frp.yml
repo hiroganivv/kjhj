@@ -171,14 +171,16 @@ jobs:
             echo "::warning::backup repo clone failed, keep cache snapshot: $(tail -2 /tmp/clone.err)"
             exit 0
           fi
-          LATEST=$(ls -1t /tmp/db-backup/snap-*.sql.gz 2>/dev/null | head -1)
-          if [ -n "${LATEST}" ] && [ -s "${LATEST}" ]; then
-            mkdir -p "${STATE_DIR}"
-            cp "${LATEST}" "${STATE_DIR}/pg.sql.gz"
-            echo "restored from backup repo: $(basename "${LATEST}")"
-          else
-            echo "no snapshot in backup repo, keep cache snapshot"
-          fi
+          for cand in $(ls -1t /tmp/db-backup/snap-*.sql.gz 2>/dev/null); do
+            if [ "$(gzip -dc "${cand}" 2>/dev/null | grep -c 'CREATE TABLE')" -gt 0 ]; then
+              mkdir -p "${STATE_DIR}"
+              cp "${cand}" "${STATE_DIR}/pg.sql.gz"
+              echo "restored from backup repo: $(basename "${cand}")"
+              exit 0
+            fi
+            echo "skip invalid snapshot: $(basename "${cand}")"
+          done
+          echo "no valid snapshot in backup repo, keep cache snapshot
 
       - name: Prepare state dirs
         run: |
@@ -633,6 +635,10 @@ jobs:
           fi
           if [ ! -s "${STATE_DIR}/pg.sql.gz" ]; then
             echo "::warning::no db snapshot, skip repo push"
+            exit 0
+          fi
+          if [ "$(gzip -dc "${STATE_DIR}/pg.sql.gz" 2>/dev/null | grep -c 'CREATE TABLE')" -eq 0 ]; then
+            echo "::warning::snapshot has no schema (empty dump), skip repo push"
             exit 0
           fi
           mkdir -p ~/.ssh
