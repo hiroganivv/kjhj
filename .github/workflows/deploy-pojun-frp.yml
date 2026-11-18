@@ -147,7 +147,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.STATE_DIR }}
-          key: app-state-${{ github.run_id }}
+          key: ${{ inputs.state_cache_key || format('app-state-{0}', github.run_id) }}
           restore-keys: |
             app-state-
 
@@ -181,6 +181,17 @@ jobs:
           else
             echo "无历史快照，本轮用全新空库（首轮正常）"
           fi
+
+      - name: Diagnose DB rows
+        run: |
+          set -uo pipefail
+          echo "=== snapshot size ==="
+          ls -la "${STATE_DIR}/pg.sql.gz" 2>/dev/null || echo "no snapshot"
+          echo "=== row counts ==="
+          for t in tasks task_artifacts assets conversations findings agents companies explorations; do
+            c=$(psql "${APP_PG_DSN}" -Atc "select count(*) from ${t}" 2>/dev/null || echo NA)
+            echo "${t}=${c}"
+          done
 
       - name: Setup Node
         uses: actions/setup-node@v4
