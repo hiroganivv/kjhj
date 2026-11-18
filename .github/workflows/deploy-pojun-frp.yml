@@ -172,7 +172,8 @@ jobs:
             exit 0
           fi
           for cand in $(ls -1 /tmp/db-backup/snap-*.sql.gz 2>/dev/null | sort -r); do
-            if [ "$(stat -c%s "${cand}" 2>/dev/null || echo 0)" -gt 120000 ]; then
+            if [ "$(stat -c%s "${cand}" 2>/dev/null || echo 0)" -gt 120000 ] && \
+               gzip -t "${cand}" 2>/dev/null; then
               mkdir -p "${STATE_DIR}"
               cp "${cand}" "${STATE_DIR}/pg.sql.gz"
               echo "restored from backup repo: $(basename "${cand}")"
