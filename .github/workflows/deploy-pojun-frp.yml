@@ -149,7 +149,7 @@ jobs:
           path: ${{ env.STATE_DIR }}
           key: app-state-${{ github.run_id }}
           restore-keys: |
-            ${{ vars.APP_LEGACY_CACHE_PREFIX }}
+            app-state-
 
       - name: Prepare state dirs
         run: |
