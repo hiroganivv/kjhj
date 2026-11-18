@@ -182,21 +182,6 @@ jobs:
             echo "无历史快照，本轮用全新空库（首轮正常）"
           fi
 
-      - name: Diagnose DB rows
-        run: |
-          set -uo pipefail
-          echo "=== pg.sql.gz size ==="
-          ls -la "${STATE_DIR}/pg.sql.gz" 2>/dev/null || echo "no snapshot"
-          echo "=== tables ==="
-          psql "${APP_PG_DSN}" -Atc "select tablename from pg_tables where schemaname='public' order by tablename" 2>&1 | head -40
-          echo "=== row counts ==="
-          for t in tasks task_runs task_artifacts assets conversations messages; do
-            c=$(psql "${APP_PG_DSN}" -Atc "select count(*) from ${t}" 2>/dev/null || echo NA)
-            echo "${t}=${c}"
-          done
-          echo "=== tasks sample ==="
-          psql "${APP_PG_DSN}" -Atc "select id,name from tasks limit 10" 2>&1 | head -10
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
