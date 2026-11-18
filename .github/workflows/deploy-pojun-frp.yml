@@ -172,7 +172,7 @@ jobs:
             exit 0
           fi
           for cand in $(ls -1 /tmp/db-backup/snap-*.sql.gz 2>/dev/null | sort -r); do
-            if [ "$(gzip -dc "${cand}" 2>/dev/null | grep -c 'CREATE TABLE')" -gt 0 ]; then
+            if [ "$(stat -c%s "${cand}" 2>/dev/null || echo 0)" -gt 120000 ]; then
               mkdir -p "${STATE_DIR}"
               cp "${cand}" "${STATE_DIR}/pg.sql.gz"
               echo "restored from backup repo: $(basename "${cand}")"
@@ -575,7 +575,7 @@ jobs:
           push_snapshot() {
             if [ -z "${BACKUP_REPO:-}" ] || [ -z "${BACKUP_KEY:-}" ]; then return 0; fi
             if [ ! -s "${STATE_DIR}/pg.sql.gz" ]; then return 0; fi
-            if [ "$(gzip -dc "${STATE_DIR}/pg.sql.gz" 2>/dev/null | grep -c 'CREATE TABLE')" -eq 0 ]; then return 0; fi
+            if [ "$(stat -c%s "${STATE_DIR}/pg.sql.gz" 2>/dev/null || echo 0)" -le 120000 ]; then return 0; fi
             mkdir -p ~/.ssh
             printf '%s\n' "${BACKUP_KEY}" > ~/.ssh/id_ed25519_backup
             chmod 600 ~/.ssh/id_ed25519_backup
@@ -620,7 +620,7 @@ jobs:
               mkdir -p "${STATE_DIR}"
               if command -v pg_dump >/dev/null 2>&1; then
                 pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz.tmp" && \
-                  { [ "$(gzip -dc "${STATE_DIR}/pg.sql.gz.tmp" 2>/dev/null | grep -c 'CREATE TABLE')" -gt 0 ] && \
+                  { [ "$(stat -c%s "${STATE_DIR}/pg.sql.gz.tmp" 2>/dev/null || echo 0)" -gt 120000 ] && \
                     mv "${STATE_DIR}/pg.sql.gz.tmp" "${STATE_DIR}/pg.sql.gz" && \
                     echo "[$(date +%T)] pg 快照已存 $(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)"; } || \
                   rm -f "${STATE_DIR}/pg.sql.gz.tmp"
@@ -665,7 +665,7 @@ jobs:
             echo "::warning::no db snapshot, skip repo push"
             exit 0
           fi
-          if [ "$(gzip -dc "${STATE_DIR}/pg.sql.gz" 2>/dev/null | grep -c 'CREATE TABLE')" -eq 0 ]; then
+          if [ "$(stat -c%s "${STATE_DIR}/pg.sql.gz" 2>/dev/null || echo 0)" -le 120000 ]; then
             echo "::warning::snapshot has no schema (empty dump), skip repo push"
             exit 0
           fi
