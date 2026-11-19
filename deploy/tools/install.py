@@ -39,6 +39,15 @@ ARCH_MAP = {
 
 results = {}  # id -> (ok:bool, msg:str)
 
+# When building the Docker image we run as root with no sudo installed.
+# On a GitHub runner we are a normal user and need sudo. Detect once.
+SUDO = [] if (os.geteuid() == 0 and shutil.which('sudo') is None) else ['sudo']
+
+
+def sudo_cmd(*args):
+    """Prepend sudo only when available/needed."""
+    return SUDO + list(args)
+
 
 def log(*a):
     print('[tools]', *a, flush=True)
@@ -85,11 +94,11 @@ def install_apt(tools):
     log(f'apt: installing {len(pkgs)} packages')
     env = os.environ.copy()
     env['DEBIAN_FRONTEND'] = 'noninteractive'
-    r = subprocess.run(['sudo', 'apt-get', 'update', '-qq'], env=env,
+    r = subprocess.run(sudo_cmd('apt-get', 'update', '-qq'), env=env,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
     if r.returncode != 0:
         log('apt update failed:', r.stdout[-500:])
-    r = subprocess.run(['sudo', 'apt-get', 'install', '-y', '-qq', '--no-install-recommends', *pkgs],
+    r = subprocess.run(sudo_cmd('apt-get', 'install', '-y', '-qq', '--no-install-recommends', *pkgs),
                        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1800)
     log('apt install rc=', r.returncode)
     if r.returncode != 0:
@@ -112,7 +121,7 @@ def install_pip(tools):
             continue
         log(f'{label}: installing {len(pkgs)} packages')
         if not force_py and shutil.which('pipx'):
-            cmd = ['sudo', 'pipx', 'install', '--global', '--pip-args=--no-cache-dir', *pkgs]
+            cmd = sudo_cmd('pipx', 'install', '--global', '--pip-args=--no-cache-dir', *pkgs)
         else:
             cmd = [sys.executable, '-m', 'pip', 'install', '--break-system-packages',
                    '--no-cache-dir', *pkgs]
@@ -252,7 +261,7 @@ def install_script(t):
     for attempt in range(2):
         # -E keeps GITHUB_TOKEN for any nested tooling; scripts write /opt and
         # /usr/local/bin so they still need root.
-        r = run(['sudo', '-E', 'bash', '-c', script], timeout=1800)
+        r = run(sudo_cmd('-E', 'bash', '-c', script), timeout=1800)
         now = available(t)
         if now:
             return True, f'script ok (attempt {attempt+1})'
