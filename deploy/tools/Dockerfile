@@ -38,15 +38,18 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       hydra john hashcat socat proxychains4 sshuttle tcpdump netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-      awscli openjdk-17-jre-headless aapt \
+      openjdk-17-jre-headless \
       libreoffice-writer libreoffice-calc libreoffice-impress \
     && rm -rf /var/lib/apt/lists/*
 
+# awscli: apt name is unstable across Ubuntu releases -> install via pip
+RUN python3 -m pip install --no-cache-dir --break-system-packages awscli || true
+
 # ---- Android tools (adb from platform-tools, apktool from jar) --------------
-# aapt comes from apt (noble universe); adb from Google's platform-tools.
 RUN curl -fsSL "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o /tmp/pt.zip \
     && unzip -q /tmp/pt.zip -d /opt \
     && ln -sf /opt/platform-tools/adb /usr/local/bin/adb \
+    && if [ -f /opt/platform-tools/aapt2 ]; then ln -sf /opt/platform-tools/aapt2 /usr/local/bin/aapt; fi \
     && rm -f /tmp/pt.zip
 RUN JAR_URL=$(curl -fsSL https://api.github.com/repos/iBotPeaches/Apktool/releases/latest \
       | python3 -c 'import sys,json;print(next(a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if a["name"].endswith(".jar")))') \
