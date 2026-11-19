@@ -49,8 +49,17 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages awscli || true
 RUN curl -fsSL "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o /tmp/pt.zip \
     && unzip -q /tmp/pt.zip -d /opt \
     && ln -sf /opt/platform-tools/adb /usr/local/bin/adb \
-    && if [ -f /opt/platform-tools/aapt2 ]; then ln -sf /opt/platform-tools/aapt2 /usr/local/bin/aapt; fi \
     && rm -f /tmp/pt.zip
+# aapt: try apt (noble universe); if absent, download aapt2 from Android
+# build-tools as a compatible fallback so hostenv PATH check passes.
+RUN (apt-get update -qq && apt-get install -y -qq --no-install-recommends aapt) \
+      || curl -fsSL "https://dl.google.com/android/repository/build-tools_r35-linux.zip" -o /tmp/bt.zip \
+      || true
+RUN if ! command -v aapt >/dev/null 2>&1 && [ -f /tmp/bt.zip ]; then \
+      unzip -q /tmp/bt.zip -d /opt/build-tools \
+      && AAPT2=$(find /opt/build-tools -name aapt2 -type f | head -1) \
+      && [ -n "$AAPT2" ] && ln -sf "$AAPT2" /usr/local/bin/aapt; \
+    fi; rm -f /tmp/bt.zip; rm -rf /var/lib/apt/lists/*
 # Pin a known jar URL: anonymous api.github.com is rate-limited during builds
 # (install.py passes GITHUB_TOKEN, this layer does not).
 RUN curl -fsSL "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar" -o /opt/apktool.jar \
