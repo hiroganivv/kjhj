@@ -209,7 +209,28 @@ jobs:
             /opt/jwt_tool
             /opt/ysoserial.jar
             /opt/seclists
-          key: hosttools-v1-${{ hashFiles('.ci-assets/deploy/tools/tool-catalog.json') }}-${{ runner.arch }}
+            /usr/local/bin/nuclei
+            /usr/local/bin/httpx
+            /usr/local/bin/subfinder
+            /usr/local/bin/naabu
+            /usr/local/bin/dnsx
+            /usr/local/bin/katana
+            /usr/local/bin/tlsx
+            /usr/local/bin/kerbrute
+            /usr/local/bin/gitleaks
+            /usr/local/bin/trivy
+            /usr/local/bin/gau
+            /usr/local/bin/waybackurls
+            /usr/local/bin/chisel
+            /usr/local/bin/amass
+            /usr/local/bin/dalfox
+            /usr/local/bin/feroxbuster
+            /usr/local/bin/ligolo-ng
+            /usr/local/bin/pspy64
+            /usr/local/bin/linpeas
+            /usr/local/bin/notify
+            /usr/local/bin/interactsh-client
+          key: hosttools-v2-${{ hashFiles('.ci-assets/deploy/tools/tool-catalog.json') }}-${{ runner.arch }}
 
       - name: Install host tools (Pojun hostenv inventory)
         env:
