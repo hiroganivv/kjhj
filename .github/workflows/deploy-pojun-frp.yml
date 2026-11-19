@@ -580,7 +580,7 @@ jobs:
         run: |
           set -uo pipefail
           started=$(date +%s)
-          next_dump=$(( started + 60 ))
+          next_dump=$(( started + 20 ))
           LAST_SUM=""
           push_snapshot() {
             (
@@ -650,9 +650,9 @@ jobs:
                   fi
                 fi
               fi
-              next_dump=$(( $(date +%s) + 60 ))
+              next_dump=$(( $(date +%s) + 20 ))
             fi
-            sleep 60
+            sleep 20
           done
         timeout-minutes: 340
 
