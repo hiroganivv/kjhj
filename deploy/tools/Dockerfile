@@ -25,6 +25,22 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       imagemagick poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# ---- hostenv apt tools (dedicated layer, no per-step script timeout) -------
+# Install apt-based tools in the Dockerfile itself, NOT via install.py: the
+# script's single 1800s subprocess timeout choked on libreoffice/openjdk when
+# all 20+ packages were installed in one process. Splitting into small batches
+# here keeps each apt transaction bounded and layers are cached across rebuilds.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      nmap masscan sqlmap ffuf gobuster whatweb testssl.sh \
+      hydra john hashcat socat proxychains4 sshuttle tcpdump netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+# aapt/adb/apktool are absent from ubuntu 22.04 main repos - skip here;
+# they are not required by hostenv's PATH detection for other tools.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      awscli openjdk-17-jre-headless \
+      libreoffice-writer libreoffice-calc libreoffice-impress \
+    && rm -rf /var/lib/apt/lists/*
+
 # Upgrade pip first: ubuntu 22.04 ships pip 22.0 which does NOT understand
 # --break-system-packages (the flag only exists in pip >= 23). install.py uses
 # that flag for the tool recipes, so get a modern pip in place first.
@@ -60,7 +76,7 @@ COPY deploy/tools/ /opt/toolchain/
 ARG GITHUB_TOKEN=""
 ENV GITHUB_TOKEN=${GITHUB_TOKEN}
 RUN cd /opt/toolchain \
-    && GITHUB_TOKEN="${GITHUB_TOKEN}" bash install.sh \
+    && SKIP_APT=1 GITHUB_TOKEN="${GITHUB_TOKEN}" bash install.sh \
     && echo "--- toolchain installed ---" \
     && command -v nmap nuclei sqlmap msfconsole jadx netexec || true
 
