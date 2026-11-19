@@ -199,13 +199,21 @@ def install_github(t):
                 with urllib.request.urlopen(req, timeout=180) as r, open(blob, 'wb') as f:
                     shutil.copyfileobj(r, f)
                 ex = os.path.join(td, 'x')
-                unpack(blob, ex)
+                if t.get('Raw'):
+                    # Raw asset IS the binary (e.g. ysoserial-all.jar, pspy64,
+                    # kerbrute). Must NOT be fed to unpack(): .jar is a zip and
+                    # would be exploded into .class files with no runnable bin.
+                    os.makedirs(ex, exist_ok=True)
+                    shutil.copy2(blob, os.path.join(ex, asset))
+                else:
+                    unpack(blob, ex)
                 wanted = t.get('BinInZip') or tid
                 src = find_bin(ex, wanted)
                 if not src:
                     # for raw single-file tools the asset name itself may differ
-                    cand = [os.path.join(ex, f) for f in os.listdir(ex)]
-                    src = cand[0] if len(cand) == 1 else None
+                    cand = [f for f in os.listdir(ex)
+                            if os.path.isfile(os.path.join(ex, f))]
+                    src = os.path.join(ex, cand[0]) if len(cand) == 1 else None
                 if not src:
                     continue
                 dest = t.get('DestPath') or os.path.join(BIN_DIR, tid)
@@ -283,7 +291,9 @@ def main():
             f.write(f'### Host tools\n\n{final_ok}/{total} available '
                     f'({final_ok/total:.0%})\n\n')
             if fails:
-                f.write('Missing: ' + ', '.join(fails) + '\n')
+                f.write('| tool | reason |\n|---|---|\n')
+                for i in fails:
+                    f.write(f'| {i} | {results[i][1]} |\n')
     return 0 if final_ok / total >= MIN_RATIO else 1
 
 
