@@ -106,6 +106,16 @@ def main() -> None:
         log("ERROR 根 layout 不存在")
         sys.exit(1)
 
+    # ChunkLoadError 自愈：轮换部署后旧 HTML 引用旧 chunk -> 404，
+    # 用增强版 error.tsx 自动刷新一次拿到新 HTML/chunk（带防循环）。
+    error_src = assets / "error.tsx"
+    error_dst = src / "web" / "src" / "app" / "error.tsx"
+    if error_src.exists() and error_dst.exists():
+        shutil.copyfile(error_src, error_dst)
+        log("OK  error.tsx 已替换（ChunkLoadError 自动刷新自愈）")
+    else:
+        log("WARN error.tsx 补丁或目标不存在，跳过")
+
     asset_tree = assets / "ruoyi-assets"
     if asset_tree.is_dir():
         public = src / "web" / "public"
