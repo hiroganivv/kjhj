@@ -195,6 +195,32 @@ jobs:
           fi
           pg_dump --version
 
+      - name: Cache host tools
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.local/share/pipx
+            /opt/nikto
+            /opt/jadx
+            /opt/Responder
+            /opt/impacket
+            /opt/jwt_tool
+            /opt/ysoserial.jar
+            /opt/seclists
+          key: hosttools-v1-${{ hashFiles('.ci-assets/deploy/tools/tool-catalog.json') }}-${{ runner.arch }}
+
+      - name: Install host tools (Pojun hostenv inventory)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TOOLS_PARALLEL: "8"
+        run: |
+          # 安装 Pojun hostenv 体检清单里的全部工具（apt/pip/github/script）。
+          # 配方来自 hosttools.catalog，装到 /usr/local/bin，使 /api/hostenv/status
+          # 的 exec.LookPath / Detect 检测转绿，worker 才能实际调用这些工具。
+          bash "${GITHUB_WORKSPACE}/.ci-assets/deploy/tools/install.sh"
+
       - name: Restore DB from snapshot
         run: |
           set -euo pipefail
