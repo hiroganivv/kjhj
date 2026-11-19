@@ -585,7 +585,7 @@
   "id": "netexec",
   "name": "netexec",
   "kind": "script",
-  "Script": "set -e\npython3 -m pip install --break-system-packages \"git+https://github.com/Pennyw0rth/NetExec.git\"\n"
+  "Script": "set -e\n# NetExec (modern CrackMapExec); PyPI withdrawn -> install from source.\n# Use --break-system-packages on Debian/Ubuntu PEP668; verify CLI entrypoint\n# and create an explicit symlink as fallback (some pip versions skip scripts).\npython3 -m pip install --break-system-packages --no-cache-dir \"git+https://github.com/Pennyw0rth/NetExec.git\"\nif ! command -v netexec >/dev/null 2>&1; then\n  ENTRY=$(python3 -c 'import importlib.metadata as m; print(m.distribution(\"netexec\").locate_file(\"../../../bin/netexec\"))' 2>/dev/null || true)\n  [ -f \"/usr/local/bin/nxc\" ] && ln -sf /usr/local/bin/nxc /usr/local/bin/netexec\nfi\ncommand -v netexec\n"
  },
  {
   "id": "semgrep",
