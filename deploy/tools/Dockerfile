@@ -25,8 +25,10 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       imagemagick poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# PEP668: allow pip --break-system-packages (install.py relies on it)
-RUN python3 -m pip install --no-cache-dir --break-system-packages -U pip setuptools wheel
+# Upgrade pip first: ubuntu 22.04 ships pip 22.0 which does NOT understand
+# --break-system-packages (the flag only exists in pip >= 23). install.py uses
+# that flag for the tool recipes, so get a modern pip in place first.
+RUN python3 -m pip install --no-cache-dir -U pip setuptools wheel
 
 # ---- Node 22 (build static UI each run) ------------------------------------
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
