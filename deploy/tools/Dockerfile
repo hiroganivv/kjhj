@@ -34,12 +34,27 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       nmap masscan sqlmap ffuf gobuster whatweb testssl.sh \
       hydra john hashcat socat proxychains4 sshuttle tcpdump netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
-# aapt/adb/apktool are absent from ubuntu 22.04 main repos - skip here;
-# they are not required by hostenv's PATH detection for other tools.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       awscli openjdk-17-jre-headless \
       libreoffice-writer libreoffice-calc libreoffice-impress \
     && rm -rf /var/lib/apt/lists/*
+
+# ---- Android tools (aapt/adb/apktool NOT in ubuntu 22.04 repos) -------------
+# Official Android platform-tools provides adb + aapt2; aapt (legacy) comes
+# from the platform-tools zip. apktool is a jar wrapped as a CLI.
+RUN curl -fsSL "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o /tmp/pt.zip \
+    && unzip -q /tmp/pt.zip -d /opt \
+    && ln -sf /opt/platform-tools/adb /usr/local/bin/adb \
+    && ln -sf /opt/platform-tools/aapt2 /usr/local/bin/aapt \
+    && rm -f /tmp/pt.zip
+RUN curl -fsSL "https://github.com/iBotPeaches/Apktool/releases/latest/download/apktool.jar" -o /opt/apktool.jar \
+    && printf '#!/bin/sh\nexec java -jar /opt/apktool.jar "$@"\n' > /usr/local/bin/apktool \
+    && chmod +x /usr/local/bin/apktool
+
+# ---- global git config: HTTP/1.1 avoids CI HTTP/2 flakes for nested git deps
+# (netexec's impacket/pynfsclient, msfconsole clone, etc.)
+RUN git config --system http.version HTTP/1.1 \
+    && git config --system http.postBuffer 524288000
 
 # Upgrade pip first: ubuntu 22.04 ships pip 22.0 which does NOT understand
 # --break-system-packages (the flag only exists in pip >= 23). install.py uses
