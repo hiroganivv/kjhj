@@ -240,8 +240,14 @@ def install_script(t):
     # 8 github workers hammer it -> flaky "works one run, fails the next".
     # Inject the Actions token so those curls get the 5000 req/h quota.
     if token and 'api.github.com' in script:
-        script = script.replace('curl -fsSL https://api.github.com',
-                                f'curl -fsSL -H "Authorization: Bearer {token}" https://api.github.com')
+        # Insert the auth header on EVERY curl whose URL is api.github.com,
+        # regardless of the flags between `curl` and the URL (--retry etc).
+        script = re.sub(
+            r'(curl\s+(?:-[A-Za-z]+\s+[^|&\n]*?\s+)?)(https://api\.github\.com)',
+            lambda m: m.group(1).rstrip() + f' -H "Authorization: Bearer {token}" ' + m.group(2),
+            script,
+        )
+        log('script: injected GH token for api.github.com calls')
     last = ''
     for attempt in range(2):
         # -E keeps GITHUB_TOKEN for any nested tooling; scripts write /opt and
