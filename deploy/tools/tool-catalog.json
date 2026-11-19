@@ -586,7 +586,7 @@
   "id": "netexec",
   "name": "netexec",
   "kind": "script",
-  "Script": "set -e\n# NetExec: PyPI withdrawn, git+https source install. Its pyproject has TWO nested\n# git dependencies (impacket @ git+..., pynfsclient @ git+...) that pip clones\n# internally with HTTP/2 -- which flakes on CI. Force HTTP/1.1 GLOBALLY so pip's\n# own git subprocesses inherit it, and retry the whole install.\ngit config --global http.version HTTP/1.1\ngit config --global http.postBuffer 524288000\n# build deps for netifaces (C extension) and others\nsudo apt-get install -y -qq python3-dev build-essential >/dev/null 2>&1 || true\nOK=0\nfor i in 1 2 3; do\n  if python3 -m pip install --break-system-packages --no-cache-dir \\\n      \"git+https://github.com/Pennyw0rth/NetExec.git\"; then OK=1; break; fi\n  echo \"netexec install retry $i\"; sleep 5\ndone\n[ \"$OK\" = 1 ]\ncommand -v netexec >/dev/null 2>&1 || { [ -f /usr/local/bin/nxc ] && ln -sf /usr/local/bin/nxc /usr/local/bin/netexec; }\ncommand -v netexec\n"
+  "Script": "set -e\n# NetExec: PyPI withdrawn -> source install. Force HTTP/1.1 so its two nested\n# git deps (impacket, pynfsclient) don't flake on HTTP/2. Fast-fail: a single\n# attempt with a bounded timeout; do NOT block the whole rotation for 15 min.\ngit config --global http.version HTTP/1.1\ntimeout 900 python3 -m pip install --break-system-packages --no-cache-dir --timeout 30 --retries 2 \\\n  \"git+https://github.com/Pennyw0rth/NetExec.git\" || true\ncommand -v netexec >/dev/null 2>&1 || { [ -f /usr/local/bin/nxc ] && ln -sf /usr/local/bin/nxc /usr/local/bin/netexec; }\ncommand -v netexec\n"
  },
  {
   "id": "semgrep",
