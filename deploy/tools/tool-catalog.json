@@ -267,7 +267,8 @@
   "id": "jadx",
   "name": "jadx",
   "kind": "script",
-  "Script": "set -e\ncurl -fsSL --retry 3 --connect-timeout 15 --max-time 600 https://api.github.com/repos/skylot/jadx/releases/latest | grep -o '\"tag_name\": *\"[^\"]*\"' | head -1 | cut -d'\"' -f4 > /tmp/jadx.tag\nTAG=$(cat /tmp/jadx.tag); VER=${TAG#v}\ncurl -fsSL --retry 3 --connect-timeout 15 --max-time 600 -o /tmp/jadx.zip \"https://github.com/skylot/jadx/releases/download/${TAG}/jadx-${VER}.zip\"\nrm -rf /opt/jadx && mkdir -p /opt/jadx && unzip -q -o /tmp/jadx.zip -d /opt/jadx\nln -sf /opt/jadx/bin/jadx /usr/local/bin/jadx\nln -sf /opt/jadx/bin/jadx-gui /usr/local/bin/jadx-gui 2>/dev/null || true\n"
+  "Detect": "dir:/opt/jadx",
+  "Script": "set -e\n# jadx needs its lib/ dir next to the launcher -> install whole release to /opt/jadx.\n# Use GitHub API (token injected by installer) to get tag robustly.\nTAG=$(curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 15 --max-time 120 https://api.github.com/repos/skylot/jadx/releases/latest | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"tag_name\"])')\nVER=${TAG#v}\ncurl -fsSL --retry 5 --retry-delay 3 --connect-timeout 15 --max-time 600 -o /tmp/jadx.zip \"https://github.com/skylot/jadx/releases/download/${TAG}/jadx-${VER}.zip\"\nrm -rf /opt/jadx && mkdir -p /opt/jadx\nunzip -q -o /tmp/jadx.zip -d /opt/jadx\nln -sf /opt/jadx/bin/jadx /usr/local/bin/jadx\nln -sf /opt/jadx/bin/jadx-gui /usr/local/bin/jadx-gui 2>/dev/null || true\n[ -d /opt/jadx ]\n"
  },
  {
   "id": "frida",
@@ -585,7 +586,7 @@
   "id": "netexec",
   "name": "netexec",
   "kind": "script",
-  "Script": "set -e\n# NetExec (modern CrackMapExec); PyPI withdrawn -> install from source.\n# Use --break-system-packages on Debian/Ubuntu PEP668; verify CLI entrypoint\n# and create an explicit symlink as fallback (some pip versions skip scripts).\npython3 -m pip install --break-system-packages --no-cache-dir \"git+https://github.com/Pennyw0rth/NetExec.git\"\nif ! command -v netexec >/dev/null 2>&1; then\n  ENTRY=$(python3 -c 'import importlib.metadata as m; print(m.distribution(\"netexec\").locate_file(\"../../../bin/netexec\"))' 2>/dev/null || true)\n  [ -f \"/usr/local/bin/nxc\" ] && ln -sf /usr/local/bin/nxc /usr/local/bin/netexec\nfi\ncommand -v netexec\n"
+  "Script": "set -e\n# NetExec: PyPI withdrawn -> clone source first (retryable, no HTTP2 pip git bug),\n# then install from the local checkout. Explicit symlink as entrypoint fallback.\nrm -rf /opt/netexec-src\nfor i in 1 2 3; do\n  git -c http.version=HTTP/1.1 clone --depth 1 https://github.com/Pennyw0rth/NetExec.git /opt/netexec-src && break\n  rm -rf /opt/netexec-src; sleep 3\ndone\n[ -d /opt/netexec-src ] || { echo \"netexec clone failed\"; exit 1; }\npython3 -m pip install --break-system-packages --no-cache-dir /opt/netexec-src\ncommand -v netexec >/dev/null 2>&1 || { [ -f /usr/local/bin/nxc ] && ln -sf /usr/local/bin/nxc /usr/local/bin/netexec; }\ncommand -v netexec\n"
  },
  {
   "id": "semgrep",
