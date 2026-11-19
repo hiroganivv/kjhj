@@ -9,7 +9,10 @@
 # The tool inventory + recipes come from deploy/tools/tool-catalog.json, which
 # is extracted from Pojun's canonical hosttools.catalog. install.py reproduces
 # hostenv's detection exactly.
-FROM ubuntu:22.04
+# ubuntu 24.04 (noble): Python 3.12 — required by netexec (>=3.11).
+# ubuntu 22.04 ships Python 3.10 which made netexec's wheel build fail with
+# "requires a different Python 3.10 not in <4.0,>=3.11" on every attempt.
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai
@@ -35,17 +38,15 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       hydra john hashcat socat proxychains4 sshuttle tcpdump netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-      awscli openjdk-17-jre-headless \
+      awscli openjdk-17-jre-headless aapt \
       libreoffice-writer libreoffice-calc libreoffice-impress \
     && rm -rf /var/lib/apt/lists/*
 
-# ---- Android tools (aapt/adb/apktool NOT in ubuntu 22.04 repos) -------------
-# Official Android platform-tools provides adb + aapt2; aapt (legacy) comes
-# from the platform-tools zip. apktool is a jar wrapped as a CLI.
+# ---- Android tools (adb from platform-tools, apktool from jar) --------------
+# aapt comes from apt (noble universe); adb from Google's platform-tools.
 RUN curl -fsSL "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o /tmp/pt.zip \
     && unzip -q /tmp/pt.zip -d /opt \
     && ln -sf /opt/platform-tools/adb /usr/local/bin/adb \
-    && ln -sf /opt/platform-tools/aapt2 /usr/local/bin/aapt \
     && rm -f /tmp/pt.zip
 RUN JAR_URL=$(curl -fsSL https://api.github.com/repos/iBotPeaches/Apktool/releases/latest \
       | python3 -c 'import sys,json;print(next(a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if a["name"].endswith(".jar")))') \
@@ -58,10 +59,9 @@ RUN JAR_URL=$(curl -fsSL https://api.github.com/repos/iBotPeaches/Apktool/releas
 RUN git config --system http.version HTTP/1.1 \
     && git config --system http.postBuffer 524288000
 
-# Upgrade pip first: ubuntu 22.04 ships pip 22.0 which does NOT understand
-# --break-system-packages (the flag only exists in pip >= 23). install.py uses
-# that flag for the tool recipes, so get a modern pip in place first.
-RUN python3 -m pip install --no-cache-dir -U pip setuptools wheel
+# Upgrade pip (24.04 pip already understands --break-system-packages).
+# install.py uses that flag for all tool recipes.
+RUN python3 -m pip install --no-cache-dir --break-system-packages -U pip setuptools wheel
 
 # ---- Node 22 (build static UI each run) ------------------------------------
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
