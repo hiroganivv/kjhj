@@ -58,6 +58,11 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    # Inside a container the default shell is `sh` (dash), which lacks
+    # `set -o pipefail`; all run steps below use pipefail -> force bash.
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 350
 
     services:
