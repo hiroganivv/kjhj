@@ -234,9 +234,26 @@ def install_script(t):
     script = t.get('Script', '')
     if not script:
         return False, 'no script'
-    r = run(['sudo', 'bash', '-c', script], timeout=1800)
-    now = available(t)
-    return now, ('script ok' if now else f'script rc={r.returncode}: {r.stdout[-300:]}')
+    token = os.environ.get('GITHUB_TOKEN', '')
+    # Several official scripts call api.github.com anonymously (jadx,
+    # ysoserial.net). Anonymous API is 60 req/h/IP and gets rate-limited when
+    # 8 github workers hammer it -> flaky "works one run, fails the next".
+    # Inject the Actions token so those curls get the 5000 req/h quota.
+    if token and 'api.github.com' in script:
+        script = script.replace('curl -fsSL https://api.github.com',
+                                f'curl -fsSL -H "Authorization: Bearer {token}" https://api.github.com')
+    last = ''
+    for attempt in range(2):
+        # -E keeps GITHUB_TOKEN for any nested tooling; scripts write /opt and
+        # /usr/local/bin so they still need root.
+        r = run(['sudo', '-E', 'bash', '-c', script], timeout=1800)
+        now = available(t)
+        if now:
+            return True, f'script ok (attempt {attempt+1})'
+        last = f'rc={r.returncode}: {r.stdout[-400:]}'
+        if r.returncode == 0:
+            break
+    return False, last
 
 
 def main():
