@@ -402,7 +402,7 @@
   "id": "searchsploit",
   "name": "searchsploit",
   "kind": "script",
-  "Script": "set -e\nif [ ! -d /opt/exploitdb/exploits ]; then rm -rf /opt/exploitdb; git clone --depth 1 https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb; fi\ncurl -fsSL --retry 3 --connect-timeout 15 --max-time 600 -o /usr/local/bin/searchsploit https://gitlab.com/exploit-database/exploitdb/-/raw/main/searchsploit\nchmod +x /usr/local/bin/searchsploit\n"
+  "Script": "set -e\n# searchsploit CLI is a single script; the exploitdb corpus (git clone) is only\n# data and gitlab.com flakes on CI. Install the CLI first so PATH detection is\n# never blocked by a corpus download; fetch corpus opportunistically.\ncurl -fsSL --retry 3 --connect-timeout 15 --max-time 120   -o /usr/local/bin/searchsploit   \"https://gitlab.com/exploit-database/exploitdb/-/raw/main/searchsploit\"   || curl -fsSL --retry 3 --connect-timeout 15 --max-time 120        -o /usr/local/bin/searchsploit        \"https://raw.githubusercontent.com/offensive-security/exploitdb/master/searchsploit\"   || true\nchmod +x /usr/local/bin/searchsploit 2>/dev/null || true\n# corpus is optional - best effort, never fails the install\nif [ ! -d /opt/exploitdb/exploits ]; then\n  timeout 180 git -c http.version=HTTP/1.1 clone --depth 1     https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb 2>/dev/null || true\nfi\ncommand -v searchsploit\n"
  },
  {
   "id": "trivy",
