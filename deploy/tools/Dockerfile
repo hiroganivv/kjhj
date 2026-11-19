@@ -62,9 +62,9 @@ RUN JAR_URL=$(curl -fsSL https://api.github.com/repos/iBotPeaches/Apktool/releas
 RUN git config --system http.version HTTP/1.1 \
     && git config --system http.postBuffer 524288000
 
-# Upgrade pip (24.04 pip already understands --break-system-packages).
-# install.py uses that flag for all tool recipes.
-RUN python3 -m pip install --no-cache-dir --break-system-packages -U pip setuptools wheel
+# ubuntu 24.04 ships pip 24.0 which already supports --break-system-packages
+# (used by install.py). No pip upgrade needed - and Debian's pip can't be
+# uninstalled via pip anyway ("RECORD file not found").
 
 # ---- Node 22 (build static UI each run) ------------------------------------
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
