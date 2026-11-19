@@ -47,7 +47,9 @@ RUN curl -fsSL "https://dl.google.com/android/repository/platform-tools-latest-l
     && ln -sf /opt/platform-tools/adb /usr/local/bin/adb \
     && ln -sf /opt/platform-tools/aapt2 /usr/local/bin/aapt \
     && rm -f /tmp/pt.zip
-RUN curl -fsSL "https://github.com/iBotPeaches/Apktool/releases/latest/download/apktool.jar" -o /opt/apktool.jar \
+RUN JAR_URL=$(curl -fsSL https://api.github.com/repos/iBotPeaches/Apktool/releases/latest \
+      | python3 -c 'import sys,json;print(next(a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if a["name"].endswith(".jar")))') \
+    && curl -fsSL "$JAR_URL" -o /opt/apktool.jar \
     && printf '#!/bin/sh\nexec java -jar /opt/apktool.jar "$@"\n' > /usr/local/bin/apktool \
     && chmod +x /usr/local/bin/apktool
 
