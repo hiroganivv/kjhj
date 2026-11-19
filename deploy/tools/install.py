@@ -285,7 +285,13 @@ def main():
         (sum(1 for v in results.values() if v[0]), {k: len(v) for k, v in todo.items()}))
 
     # 2) batch install apt + pip
-    install_apt(todo['apt'])
+    # SKIP_APT=1: apt packages were baked in a separate Docker RUN layer
+    # (avoids one 30-min timeout on big packages like libreoffice). We still
+    # re-detect apt tools at the end so they count toward the final tally.
+    if os.environ.get('SKIP_APT') == '1':
+        log('SKIP_APT=1: apt handled by image build layer, skipping here')
+    else:
+        install_apt(todo['apt'])
     install_pip(todo['pip'])
 
     # 3) github (parallel) + script (sequential, may share /opt)
