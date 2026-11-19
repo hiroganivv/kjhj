@@ -25,6 +25,7 @@ on:
 permissions:
   contents: read
   actions: write
+  packages: read
 
 concurrency:
   group: app-frp
@@ -50,6 +51,13 @@ jobs:
   serve:
     name: build + run + frp tunnel
     runs-on: ubuntu-latest
+    # Pre-baked toolchain image: all 90 hostenv tools are already on PATH,
+    # so every rotation starts ready - no per-run apt/pip/github install.
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/kjhj-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 350
 
     services:
@@ -68,7 +76,9 @@ jobs:
           --health-retries 30
 
     env:
-      APP_PG_DSN: postgres://appuser:app_ephemeral_pw@127.0.0.1:5432/appdb?sslmode=disable
+      # container job: postgres service is reachable by its service id on the
+      # shared docker network, not 127.0.0.1 (that is the runner host).
+      APP_PG_DSN: postgres://appuser:app_ephemeral_pw@postgres:5432/appdb?sslmode=disable
       APP_SKILL_DIR: ${{ github.workspace }}/src/skills
       FRP_TOKEN: ${{ secrets.FRP_TOKEN }}
       FRP_SERVER_PORT: ${{ secrets.FRP_BIND_PORT }}
@@ -194,53 +204,6 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
           fi
           pg_dump --version
-
-      - name: Cache host tools
-        id: tools-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.local/share/pipx
-            /opt/nikto
-            /opt/jadx
-            /opt/Responder
-            /opt/impacket
-            /opt/jwt_tool
-            /opt/ysoserial.jar
-            /opt/seclists
-            /usr/local/bin/nuclei
-            /usr/local/bin/httpx
-            /usr/local/bin/subfinder
-            /usr/local/bin/naabu
-            /usr/local/bin/dnsx
-            /usr/local/bin/katana
-            /usr/local/bin/tlsx
-            /usr/local/bin/kerbrute
-            /usr/local/bin/gitleaks
-            /usr/local/bin/trivy
-            /usr/local/bin/gau
-            /usr/local/bin/waybackurls
-            /usr/local/bin/chisel
-            /usr/local/bin/amass
-            /usr/local/bin/dalfox
-            /usr/local/bin/feroxbuster
-            /usr/local/bin/ligolo-ng
-            /usr/local/bin/pspy64
-            /usr/local/bin/linpeas
-            /usr/local/bin/notify
-            /usr/local/bin/interactsh-client
-          key: hosttools-v2-${{ hashFiles('.ci-assets/deploy/tools/tool-catalog.json') }}-${{ runner.arch }}
-
-      - name: Install host tools (Pojun hostenv inventory)
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          TOOLS_PARALLEL: "8"
-        run: |
-          # 安装 Pojun hostenv 体检清单里的全部工具（apt/pip/github/script）。
-          # 配方来自 hosttools.catalog，装到 /usr/local/bin，使 /api/hostenv/status
-          # 的 exec.LookPath / Detect 检测转绿，worker 才能实际调用这些工具。
-          bash "${GITHUB_WORKSPACE}/.ci-assets/deploy/tools/install.sh"
 
       - name: Restore DB from snapshot
         run: |
@@ -597,6 +560,48 @@ jobs:
             code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://${OOB_PUBLIC_HOST}:${ap}/" || echo 000)
             echo "http://${OOB_PUBLIC_HOST}:${ap}/ -> HTTP ${code}"
           done
+
+      - name: Verify hostenv toolchain ready (after frp up)
+        # 只有在 app + frp 隧道完全就绪后才查 hostenv——避免交接空窗期误判。
+        # 工具已预烘焙进镜像，这里只做「就绪后一次性确认」，不安装任何东西。
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          BASE="https://${OOB_PUBLIC_HOST}:${FRP_REMOTE_PORT}"
+          # 先确认公网入口真的通（frp 已起来），不通就不查（避免误判）
+          code=$(curl -ksS -o /dev/null -w '%{http_code}' --max-time 15 "${BASE}/api/health" || echo 000)
+          if [ "${code}" != "200" ]; then
+            echo "::warning::公网入口未就绪(HTTP ${code})，跳过 hostenv 校验（非工具问题）"
+            exit 0
+          fi
+          token=$(curl -ksS -m 20 -X POST "${BASE}/api/auth/login" \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_INIT_PASSWORD}\"}" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
+          if [ -z "${token}" ]; then
+            echo "::warning::登录失败(可能限流)，跳过 hostenv 校验"
+            exit 0
+          fi
+          curl -ksS -m 20 "${BASE}/api/hostenv/status" -H "Authorization: Bearer ${token}" \
+            > /tmp/hostenv.json 2>/dev/null || true
+          python3 - <<'PYEOF'
+          import json, os
+          try:
+              d = json.load(open('/tmp/hostenv.json'))
+              tools = d.get('tools', [])
+              ok = sum(1 for t in tools if t.get('available'))
+              total = len(tools)
+              miss = [t['id'] for t in tools if not t.get('available')]
+              print(f"[hostenv] {ok}/{total} tools available")
+              if miss: print("[hostenv] missing:", ', '.join(miss))
+              summary = os.environ.get('GITHUB_STEP_SUMMARY', '')
+              if summary:
+                  with open(summary, 'a') as f:
+                      f.write(f'### Hostenv readiness\n\n{ok}/{total} tools available\n')
+                      if miss: f.write('Missing: ' + ', '.join(miss) + '\n')
+          except Exception as e:
+              print('[hostenv] parse failed:', e)
+          PYEOF
 
       - name: Queue successor run
         if: always()
