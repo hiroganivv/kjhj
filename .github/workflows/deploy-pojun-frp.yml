@@ -749,15 +749,55 @@ jobs:
 
       - name: Save state snapshot
         if: always()
+        env:
+          BACKUP_KEY: ${{ secrets.BACKUP_SSH_KEY }}
+          BACKUP_REPO: ${{ secrets.BACKUP_REPO_SSH }}
         run: |
           set -uo pipefail
           mkdir -p "${STATE_DIR}" "${GITHUB_WORKSPACE}/.ci-state"
           if command -v pg_dump >/dev/null 2>&1; then
-            pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz" || \
+            pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz.tmp" && \
+              gzip -t "${STATE_DIR}/pg.sql.gz.tmp" 2>/dev/null && \
+              mv "${STATE_DIR}/pg.sql.gz.tmp" "${STATE_DIR}/pg.sql.gz" || \
               echo "::warning::pg_dump 失败，本次数据库快照缺失"
           fi
           cp -a "${STATE_DIR}/." "${GITHUB_WORKSPACE}/.ci-state/" 2>/dev/null || true
           du -sh "${STATE_DIR}" 2>/dev/null || true
+
+          # 兜底：job 结束（含被 cancel）时同步推一份到 backup repo。
+          # 之前只靠 actions/cache/save，job 被 cancel 时来不及保存 -> 数据丢失。
+          # 异地 push 是同步的，即使 cancel 也会执行完这个 always() 步骤。
+          if [ -z "${BACKUP_REPO:-}" ] || [ -z "${BACKUP_KEY:-}" ] || \
+             [ ! -s "${STATE_DIR}/pg.sql.gz" ]; then exit 0; fi
+          if [ "$(stat -c%s "${STATE_DIR}/pg.sql.gz" 2>/dev/null || echo 0)" -le 120000 ]; then
+            echo "快照过小，跳过 push"; exit 0
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "${BACKUP_KEY}" > ~/.ssh/id_ed25519_backup
+          chmod 600 ~/.ssh/id_ed25519_backup
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519_backup -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -p 443"
+          bdir=/tmp/db-finalpush-$$
+          rm -rf "${bdir}"
+          if git clone --depth 1 "${BACKUP_REPO}" "${bdir}" >/dev/null 2>&1; then
+            cd "${bdir}"
+            git config user.email "backup@local"; git config user.name "backup"
+            ts=$(date -u +%Y%m%d%H%M%S)
+            cp "${STATE_DIR}/pg.sql.gz" "snap-${ts}.sql.gz"
+            ls -1 snap-*.sql.gz 2>/dev/null | sort -r | tail -n +4 | while read -r f; do rm -f "$f"; done
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "final snapshot ${ts}" >/dev/null
+              for attempt in 1 2 3; do
+                git push origin HEAD:main >/dev/null 2>&1 && { echo "✓ 最终快照已推送 backup repo"; break; }
+                git pull --rebase origin main >/dev/null 2>&1 || true
+                sleep $((attempt*3))
+              done || echo "::warning::最终快照 push 失败"
+            fi
+            cd /
+          else
+            echo "::warning::backup repo clone 失败，最终快照未推送异地"
+          fi
 
       - name: Cache state snapshot
         if: always()
