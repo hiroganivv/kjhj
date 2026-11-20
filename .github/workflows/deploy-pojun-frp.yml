@@ -166,60 +166,6 @@ jobs:
           restore-keys: |
             app-state-
 
-      - name: Restore from backup repo
-        env:
-          BACKUP_KEY: ${{ secrets.BACKUP_SSH_KEY }}
-          BACKUP_REPO: ${{ secrets.BACKUP_REPO_SSH }}
-        run: |
-          set -uo pipefail
-          if [ -z "${BACKUP_REPO:-}" ] || [ -z "${BACKUP_KEY:-}" ]; then
-            echo "backup repo not configured, skip"
-            exit 0
-          fi
-          mkdir -p ~/.ssh
-          printf '%s\n' "${BACKUP_KEY}" > ~/.ssh/id_ed25519_backup
-          chmod 600 ~/.ssh/id_ed25519_backup
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519_backup -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -p 443"
-          rm -rf /tmp/db-backup
-          if ! git clone --depth 1 "${BACKUP_REPO}" /tmp/db-backup 2>/tmp/clone.err; then
-            echo "::warning::backup repo clone failed, keep cache snapshot: $(tail -2 /tmp/clone.err)"
-            exit 0
-          fi
-          # 关键修复：只在 backup 快照比 cache 快照更新时才覆盖。
-          # 之前无条件覆盖，导致 backup push 失败时旧快照盖掉 cache 里的新数据
-          # （曾造成 2026-11-19 23:40~00:30 新增的 5 个任务丢失）。
-          cache_snap="${STATE_DIR}/pg.sql.gz"
-          cache_ts=0
-          if [ -s "${cache_snap}" ]; then
-            cache_ts=$(stat -c%Y "${cache_snap}" 2>/dev/null || echo 0)
-            echo "cache snapshot mtime: $(date -d "@${cache_ts}" -u '+%F %T UTC' 2>/dev/null || echo unknown)"
-          fi
-          best_newer=""
-          for cand in $(ls -1 /tmp/db-backup/snap-*.sql.gz 2>/dev/null | sort -r); do
-            if [ "$(stat -c%s "${cand}" 2>/dev/null || echo 0)" -le 120000 ] || \
-               ! gzip -t "${cand}" 2>/dev/null; then
-              echo "skip invalid snapshot: $(basename "${cand}")"
-              continue
-            fi
-            # 从文件名 snap-YYYYMMDDHHMMSS.sql.gz 解析 UTC 时间戳
-            bname=$(basename "${cand}")
-            stamp=${bname#snap-}; stamp=${stamp%.sql.gz}
-            snap_ts=$(date -u -d "${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:8:2}:${stamp:10:2}:${stamp:12:2}" +%s 2>/dev/null || echo 0)
-            echo "backup candidate: ${bname} ($(date -d "@${snap_ts}" -u '+%F %T UTC' 2>/dev/null || echo unknown))"
-            if [ "${snap_ts}" -gt "${cache_ts}" ]; then
-              best_newer="${cand}"
-              break
-            fi
-          done
-          if [ -n "${best_newer}" ]; then
-            mkdir -p "${STATE_DIR}"
-            cp "${best_newer}" "${cache_snap}"
-            echo "restored NEWER from backup repo: $(basename "${best_newer}")"
-          else
-            echo "no newer snapshot in backup repo, keep cache snapshot (safer)"
-          fi
-
       - name: Prepare state dirs
         run: |
           mkdir -p "${APP_DATA_DIR}" "${STATE_DIR}/data"
@@ -652,53 +598,12 @@ jobs:
           exit 1
 
       - name: Serve with keepalive
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BACKUP_KEY: ${{ secrets.BACKUP_SSH_KEY }}
-          BACKUP_REPO: ${{ secrets.BACKUP_REPO_SSH }}
         run: |
           set -uo pipefail
+          # 数据持久化严格沿用 old 版：每 30min 直接写 pg.sql.gz（无 tmp/无 md5/无 push），
+          # 轮次结束由 Save state snapshot 兜底。单一数据源 GH cache，不引入竞态。
           started=$(date +%s)
-          next_dump=$(( started + 20 ))
-          LAST_SUM=""
-          push_snapshot() {
-            (
-            if [ -z "${BACKUP_REPO:-}" ] || [ -z "${BACKUP_KEY:-}" ]; then exit 0; fi
-            if [ ! -s "${STATE_DIR}/pg.sql.gz" ]; then exit 0; fi
-            if [ "$(stat -c%s "${STATE_DIR}/pg.sql.gz" 2>/dev/null || echo 0)" -le 120000 ]; then exit 0; fi
-            mkdir -p ~/.ssh
-            printf '%s\n' "${BACKUP_KEY}" > ~/.ssh/id_ed25519_backup
-            chmod 600 ~/.ssh/id_ed25519_backup
-            ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
-            export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519_backup -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -p 443"
-            local dir; dir=/tmp/db-kpush-$$
-            rm -rf "${dir}"
-            git clone --depth 1 "${BACKUP_REPO}" "${dir}" >/dev/null 2>&1 || exit 0
-            cd "${dir}"
-            git config user.email "backup@local"; git config user.name "backup"
-            local ts; ts=$(date -u +%Y%m%d%H%M%S)
-            cp "${STATE_DIR}/pg.sql.gz" "snap-${ts}.sql.gz"
-            ls -1 snap-*.sql.gz 2>/dev/null | sort -r | tail -n +4 | while read -r f; do rm -f "$f"; done
-            git add -A
-            git diff --cached --quiet && { cd /; exit 0; }
-            git commit -m "snapshot ${ts}" >/dev/null || { cd /; exit 0; }
-            # 重试 push：先直推，失败则 pull --rebase 后再推，最多 3 次。
-            # 之前 push 失败被 || true 静默吞掉 -> backup repo 停留在旧快照，
-            # 轮换时旧快照覆盖 cache 新数据 -> 任务丢失。这里失败必须显式告警。
-            pushed=0
-            for attempt in 1 2 3; do
-              if git push origin HEAD:main >/dev/null 2>&1; then pushed=1; break; fi
-              git pull --rebase origin main >/dev/null 2>&1 || true
-              sleep $(( attempt * 3 ))
-            done
-            if [ "${pushed}" = 1 ]; then
-              echo "[$(date +%T)] snapshot pushed to repo"
-            else
-              echo "::warning::备份快照 push 失败（3 次）— 本轮数据仅在 GH cache，请留意"
-            fi
-            cd /
-            )
-          }
+          next_dump=$(( started + 1800 ))
           n=0
           while true; do
             n=$((n+1))
@@ -724,88 +629,28 @@ jobs:
             if [ "$(date +%s)" -ge "${next_dump}" ]; then
               mkdir -p "${STATE_DIR}"
               if command -v pg_dump >/dev/null 2>&1; then
-                # tmp 写在 STATE_DIR 外：cache save 打包 STATE_DIR 时若碰到
-                # 正在写入的 pg.sql.gz.tmp，tar 会报 "file changed as we read it"
-                # 导致整个缓存保存失败（曾致恢复的数据存不下来、反复回退）。
-                KDUMP="/tmp/pg-dump-$$.tmp"
-                if pg_dump "${APP_PG_DSN}" | gzip > "${KDUMP}" && \
-                   gzip -t "${KDUMP}" 2>/dev/null; then
-                  if [ "$(stat -c%s "${KDUMP}" 2>/dev/null || echo 0)" -gt 120000 ]; then
-                    CUR_SUM=$(md5sum "${KDUMP}" 2>/dev/null | cut -d' ' -f1)
-                    if [ "${CUR_SUM}" != "${LAST_SUM}" ]; then
-                      mv "${KDUMP}" "${STATE_DIR}/pg.sql.gz"
-                      LAST_SUM="${CUR_SUM}"
-                      echo "[$(date +%T)] 数据变化,快照已存 $(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)"
-                      push_snapshot
-                    else
-                      rm -f "${KDUMP}"
-                    fi
-                  else
-                    rm -f "${KDUMP}"
-                  fi
-                fi
+                pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz" && \
+                  echo "[$(date +%T)] pg 快照已存 $(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)" || true
               fi
-              next_dump=$(( $(date +%s) + 20 ))
+              next_dump=$(( $(date +%s) + 1800 ))
             fi
-            sleep 20
+            sleep 60
           done
         timeout-minutes: 340
 
+
       - name: Save state snapshot
         if: always()
-        env:
-          BACKUP_KEY: ${{ secrets.BACKUP_SSH_KEY }}
-          BACKUP_REPO: ${{ secrets.BACKUP_REPO_SSH }}
         run: |
           set -uo pipefail
           mkdir -p "${STATE_DIR}" "${GITHUB_WORKSPACE}/.ci-state"
-          # tmp 写到 STATE_DIR 外，避免 cache save 打包时撞到正在写的文件
-          FDUMP=/tmp/pg-final-$$.gz.tmp
           if command -v pg_dump >/dev/null 2>&1; then
-            pg_dump "${APP_PG_DSN}" | gzip > "${FDUMP}" && \
-              gzip -t "${FDUMP}" 2>/dev/null && \
-              [ "$(stat -c%s "${FDUMP}" 2>/dev/null || echo 0)" -gt 120000 ] && \
-              mv "${FDUMP}" "${STATE_DIR}/pg.sql.gz" || \
-              echo "::warning::pg_dump 失败或无有效数据，保留已有快照"
+            pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz" || \
+              echo "::warning::pg_dump 失败，本次数据库快照缺失"
           fi
-          rm -f "${FDUMP}" "${STATE_DIR}"/pg.sql.gz.tmp 2>/dev/null || true
           cp -a "${STATE_DIR}/." "${GITHUB_WORKSPACE}/.ci-state/" 2>/dev/null || true
           du -sh "${STATE_DIR}" 2>/dev/null || true
 
-          # 兜底：job 结束（含被 cancel）时同步推一份到 backup repo。
-          # 之前只靠 actions/cache/save，job 被 cancel 时来不及保存 -> 数据丢失。
-          # 异地 push 是同步的，即使 cancel 也会执行完这个 always() 步骤。
-          if [ -z "${BACKUP_REPO:-}" ] || [ -z "${BACKUP_KEY:-}" ] || \
-             [ ! -s "${STATE_DIR}/pg.sql.gz" ]; then exit 0; fi
-          if [ "$(stat -c%s "${STATE_DIR}/pg.sql.gz" 2>/dev/null || echo 0)" -le 120000 ]; then
-            echo "快照过小，跳过 push"; exit 0
-          fi
-          mkdir -p ~/.ssh
-          printf '%s\n' "${BACKUP_KEY}" > ~/.ssh/id_ed25519_backup
-          chmod 600 ~/.ssh/id_ed25519_backup
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519_backup -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -p 443"
-          bdir=/tmp/db-finalpush-$$
-          rm -rf "${bdir}"
-          if git clone --depth 1 "${BACKUP_REPO}" "${bdir}" >/dev/null 2>&1; then
-            cd "${bdir}"
-            git config user.email "backup@local"; git config user.name "backup"
-            ts=$(date -u +%Y%m%d%H%M%S)
-            cp "${STATE_DIR}/pg.sql.gz" "snap-${ts}.sql.gz"
-            ls -1 snap-*.sql.gz 2>/dev/null | sort -r | tail -n +4 | while read -r f; do rm -f "$f"; done
-            git add -A
-            if ! git diff --cached --quiet; then
-              git commit -m "final snapshot ${ts}" >/dev/null
-              for attempt in 1 2 3; do
-                git push origin HEAD:main >/dev/null 2>&1 && { echo "✓ 最终快照已推送 backup repo"; break; }
-                git pull --rebase origin main >/dev/null 2>&1 || true
-                sleep $((attempt*3))
-              done || echo "::warning::最终快照 push 失败"
-            fi
-            cd /
-          else
-            echo "::warning::backup repo clone 失败，最终快照未推送异地"
-          fi
 
       - name: Cache state snapshot
         if: always()
