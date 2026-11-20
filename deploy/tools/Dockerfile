@@ -26,7 +26,23 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       build-essential pkg-config libffi-dev libssl-dev \
       postgresql-client openssl nginx net-tools iputils-ping dnsutils \
       imagemagick poppler-utils \
+      openssh-client jq \
     && rm -rf /var/lib/apt/lists/*
+
+# ---- GitHub CLI (gh) -------------------------------------------------------
+# Required by the deploy job's "Queue successor run" step. Without it the
+# successor chain silently breaks and the watchdog keeps cancelling the
+# serving run -> unsaved DB snapshots lost. Install from GitHub's official apt
+# repo (not in ubuntu main).
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update -qq && apt-get install -y -qq --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/* \
+    && gh --version | head -1
 
 # ---- hostenv apt tools (dedicated layer, no per-step script timeout) -------
 # Install apt-based tools in the Dockerfile itself, NOT via install.py: the
