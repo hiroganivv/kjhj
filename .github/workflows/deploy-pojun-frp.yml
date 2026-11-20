@@ -162,7 +162,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.STATE_DIR }}
-          key: app-state-${{ github.run_id }}
+          key: ${{ inputs.state_cache_key || format('app-state-{0}', github.run_id) }}
           restore-keys: |
             app-state-
 
@@ -186,17 +186,39 @@ jobs:
             echo "::warning::backup repo clone failed, keep cache snapshot: $(tail -2 /tmp/clone.err)"
             exit 0
           fi
+          # 关键修复：只在 backup 快照比 cache 快照更新时才覆盖。
+          # 之前无条件覆盖，导致 backup push 失败时旧快照盖掉 cache 里的新数据
+          # （曾造成 2026-11-19 23:40~00:30 新增的 5 个任务丢失）。
+          cache_snap="${STATE_DIR}/pg.sql.gz"
+          cache_ts=0
+          if [ -s "${cache_snap}" ]; then
+            cache_ts=$(stat -c%Y "${cache_snap}" 2>/dev/null || echo 0)
+            echo "cache snapshot mtime: $(date -d "@${cache_ts}" -u '+%F %T UTC' 2>/dev/null || echo unknown)"
+          fi
+          best_newer=""
           for cand in $(ls -1 /tmp/db-backup/snap-*.sql.gz 2>/dev/null | sort -r); do
-            if [ "$(stat -c%s "${cand}" 2>/dev/null || echo 0)" -gt 120000 ] && \
-               gzip -t "${cand}" 2>/dev/null; then
-              mkdir -p "${STATE_DIR}"
-              cp "${cand}" "${STATE_DIR}/pg.sql.gz"
-              echo "restored from backup repo: $(basename "${cand}")"
-              exit 0
+            if [ "$(stat -c%s "${cand}" 2>/dev/null || echo 0)" -le 120000 ] || \
+               ! gzip -t "${cand}" 2>/dev/null; then
+              echo "skip invalid snapshot: $(basename "${cand}")"
+              continue
             fi
-            echo "skip invalid snapshot: $(basename "${cand}")"
+            # 从文件名 snap-YYYYMMDDHHMMSS.sql.gz 解析 UTC 时间戳
+            bname=$(basename "${cand}")
+            stamp=${bname#snap-}; stamp=${stamp%.sql.gz}
+            snap_ts=$(date -u -d "${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:8:2}:${stamp:10:2}:${stamp:12:2}" +%s 2>/dev/null || echo 0)
+            echo "backup candidate: ${bname} ($(date -d "@${snap_ts}" -u '+%F %T UTC' 2>/dev/null || echo unknown))"
+            if [ "${snap_ts}" -gt "${cache_ts}" ]; then
+              best_newer="${cand}"
+              break
+            fi
           done
-          echo "no valid snapshot in backup repo, keep cache snapshot"
+          if [ -n "${best_newer}" ]; then
+            mkdir -p "${STATE_DIR}"
+            cp "${best_newer}" "${cache_snap}"
+            echo "restored NEWER from backup repo: $(basename "${best_newer}")"
+          else
+            echo "no newer snapshot in backup repo, keep cache snapshot (safer)"
+          fi
 
       - name: Prepare state dirs
         run: |
@@ -659,9 +681,21 @@ jobs:
             ls -1 snap-*.sql.gz 2>/dev/null | sort -r | tail -n +4 | while read -r f; do rm -f "$f"; done
             git add -A
             git diff --cached --quiet && { cd /; exit 0; }
-            git commit -m "snapshot ${ts}" >/dev/null
-            git push origin HEAD:main >/dev/null 2>&1 && echo "[$(date +%T)] snapshot pushed to repo" || \
-              { git pull --rebase origin main >/dev/null 2>&1 || true; git push origin HEAD:main >/dev/null 2>&1 || true; }
+            git commit -m "snapshot ${ts}" >/dev/null || { cd /; exit 0; }
+            # 重试 push：先直推，失败则 pull --rebase 后再推，最多 3 次。
+            # 之前 push 失败被 || true 静默吞掉 -> backup repo 停留在旧快照，
+            # 轮换时旧快照覆盖 cache 新数据 -> 任务丢失。这里失败必须显式告警。
+            pushed=0
+            for attempt in 1 2 3; do
+              if git push origin HEAD:main >/dev/null 2>&1; then pushed=1; break; fi
+              git pull --rebase origin main >/dev/null 2>&1 || true
+              sleep $(( attempt * 3 ))
+            done
+            if [ "${pushed}" = 1 ]; then
+              echo "[$(date +%T)] snapshot pushed to repo"
+            else
+              echo "::warning::备份快照 push 失败（3 次）— 本轮数据仅在 GH cache，请留意"
+            fi
             cd /
             )
           }
