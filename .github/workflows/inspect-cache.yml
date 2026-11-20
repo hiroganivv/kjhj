@@ -24,7 +24,8 @@ jobs:
         with:
           path: /tmp/inspect-state
           key: ${{ inputs.cache_key }}
-          restore-keys: ""
+          restore-keys: |
+            app-state-
 
       - name: Check snapshot
         env:
