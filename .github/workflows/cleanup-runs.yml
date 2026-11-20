@@ -1,0 +1,80 @@
+name: cleanup old app-deploy runs
+
+# 定时清理 app-deploy 的历史 run，只保留最新 4 个。
+# 为什么不删其他 workflow：app-deploy 轮换极频繁（每 2h + 接棒轮），
+# 历史会迅速堆积到上百条，干扰查看。build-toolchain-image / app-keep-online
+# 保留完整历史，便于审计。
+on:
+  schedule:
+    - cron: "17 * * * *"   # 每小时第 17 分钟（错开整点和 :03/:13 的看门狗）
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: cleanup-runs
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Delete old app-deploy runs (keep newest 4)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          # 用精确 ID 锁定 app-deploy，避免名字变动误删其他 workflow
+          wid="420066986"
+          keep=4
+
+          # 拉全部 run（分页），按 API 默认顺序（最新在前）
+          all=/tmp/app-deploy-runs.tsv
+          : > "${all}"
+          page=1
+          while :; do
+            chunk=$(gh api "repos/${repo}/actions/workflows/${wid}/runs?per_page=100&page=${page}" \
+              --jq '.workflow_runs[] | [.id, .run_number, .status] | @tsv' 2>/dev/null)
+            [ -z "${chunk}" ] && break
+            echo "${chunk}" >> "${all}"
+            n=$(echo "${chunk}" | wc -l)
+            [ "${n}" -lt 100 ] && break
+            page=$((page + 1))
+          done
+
+          total=$(wc -l < "${all}")
+          echo "app-deploy 历史 run 总数: ${total}（保留最新 ${keep} 个）"
+          if [ "${total}" -le "${keep}" ]; then
+            echo "无需清理"
+            exit 0
+          fi
+
+          # 跳过前 keep 个；从 keep+1 开始删
+          tail -n +$((keep + 1)) "${all}" | while IFS=$'\t' read -r rid rnum status; do
+            [ -z "${rid}" ] && continue
+            # 安全护栏：正在运行的 run 绝不删除（避免顶掉服务/中断轮换）
+            if [ "${status}" = "in_progress" ] || [ "${status}" = "queued" ] || [ "${status}" = "pending" ]; then
+              echo "SKIP 活跃 run #${rnum} (${status})"
+              continue
+            fi
+            if gh api -X DELETE "repos/${repo}/actions/runs/${rid}" >/dev/null 2>&1; then
+              echo "DELETED #${rnum} (${rid})"
+            else
+              echo "::warning::删除失败 #${rnum} (${rid})"
+            fi
+          done
+
+          remaining=$(gh api "repos/${repo}/actions/workflows/${wid}/runs?per_page=100" \
+            --jq '.total_count' 2>/dev/null || echo "?")
+          echo "清理后 app-deploy run 数: ${remaining}（不含活跃 run）"
+          {
+            echo "### app-deploy 历史清理"
+            echo ""
+            echo "- 清理前: ${total} 条"
+            echo "- 策略: 保留最新 ${keep} 条 + 所有活跃 run"
+            echo "- 清理后: ${remaining} 条"
+          } >> "$GITHUB_STEP_SUMMARY"
