@@ -23,26 +23,57 @@ jobs:
       - name: Check and restart if needed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OOB_PUBLIC_HOST: ${{ vars.OOB_PUBLIC_HOST }}
+          FRP_REMOTE_PORT: ${{ secrets.FRP_REMOTE_PORT }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           repo="${GITHUB_REPOSITORY}"
           wf="deploy-pojun-frp.yml"
           branch=$(gh api "repos/${repo}" --jq '.default_branch')
+
+          # 公网健康检查：单纯看"有没有活跃 run"不够——2026-11-19 曾因失败轮的
+          # keepalive 卡住显示 active>0，看门狗 7 小时没拉起服务。必须看真实健康。
+          health=000
+          if [ -n "${OOB_PUBLIC_HOST:-}" ] && [ -n "${FRP_REMOTE_PORT:-}" ]; then
+            health=$(curl -ksS -o /dev/null -w '%{http_code}' --max-time 12 \
+              "https://${OOB_PUBLIC_HOST}:${FRP_REMOTE_PORT}/api/health" || echo 000)
+          fi
+          echo "公网 health=${health} (${OOB_PUBLIC_HOST:-?}:${FRP_REMOTE_PORT:-?})"
+
+          # 找最活跃的 run，算它已运行时长
           active=$(gh api "repos/${repo}/actions/workflows/${wf}/runs?per_page=20" \
             --jq '[.workflow_runs[]
                    | select(.status=="queued" or .status=="in_progress" or .status=="pending")]
                   | length')
-          echo "主 workflow 活跃 run 数: ${active}（默认分支 ${branch}）"
-          if [ "${active}" -gt 0 ]; then
-            echo "已有运行中的部署，本次不重复触发"
+          started=$(gh api "repos/${repo}/actions/workflows/${wf}/runs?per_page=20" \
+            --jq '[.workflow_runs[]
+                   | select(.status=="in_progress") | .run_started_at] | first // ""')
+          age_min=0
+          if [ -n "${started}" ]; then
+            s=$(date -d "${started}" +%s 2>/dev/null || echo 0)
+            [ "${s}" -gt 0 ] && age_min=$(( ($(date +%s) - s) / 60 ))
+          fi
+          echo "活跃 run 数=${active}, 最老 in_progress 已运行 ${age_min} 分钟"
+
+          # 健康 200 且近期有活跃 run -> 正常，跳过
+          if [ "${health}" = "200" ] && [ "${active}" -gt 0 ]; then
+            echo "服务健康且有活跃部署，本次不触发"
             exit 0
           fi
-          echo "::warning::没有活跃部署，触发 workflow_dispatch 拉起一轮"
+          # 不健康，但活跃 run 还在 25 分钟构建窗口内 -> 可能是轮换空窗，避免重复触发
+          if [ "${health}" != "200" ] && [ "${active}" -gt 0 ] && [ "${age_min}" -lt 25 ]; then
+            echo "服务暂不可达但部署仍在构建窗口内（${age_min}min），跳过以免并发顶掉"
+            exit 0
+          fi
+          # 其余情况（无活跃 run，或活跃 run 超 25 分钟仍不健康）-> 触发新一轮
+          echo "::warning::服务异常(health=${health})或部署卡住(${active} run/${age_min}min)，触发新一轮"
           gh workflow run "${wf}" --repo "${repo}" --ref "${branch}"
-          echo "已触发，下一轮将在数分钟内完成构建并接管隧道"
+          echo "已触发"
           {
             echo "### 看门狗"
             echo ""
             echo "- 检查时刻：$(date -u '+%F %T UTC')"
-            echo "- 主 workflow 活跃 run：${active} → 已触发新一轮"
+            echo "- 公网 health：${health}"
+            echo "- 活跃 run：${active}，已运行 ${age_min} 分钟"
+            echo "- 动作：已触发新一轮"
           } >> "$GITHUB_STEP_SUMMARY"
