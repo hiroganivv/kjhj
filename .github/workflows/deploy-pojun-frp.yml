@@ -44,7 +44,11 @@ env:
   APP_LOCAL_PORT: ${{ secrets.APP_LOCAL_PORT }}
   WEB_TLS_LOCAL_PORT: "8443"
   STATE_DIR: ${{ github.workspace }}/.app-state
-  APP_DATA_DIR: ${{ github.workspace }}/.app-state/data
+  # app 的运行时数据目录必须放在 STATE_DIR 之外：STATE_DIR 会被 actions/cache
+  # 整体打包，agent 实时写 data/tasks/<id> 时 tar 报 "file changed as we read it"
+  # -> 缓存保存失败 -> 下一轮换从旧快照恢复 -> 新任务丢失（真正根因）。
+  # 该目录不参与跨轮恢复（恢复只用 STATE_DIR/pg.sql.gz），移出即可根治。
+  APP_DATA_DIR: ${{ github.workspace }}/.app-work/data
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
@@ -168,7 +172,7 @@ jobs:
 
       - name: Prepare state dirs
         run: |
-          mkdir -p "${APP_DATA_DIR}" "${STATE_DIR}/data"
+          mkdir -p "${APP_DATA_DIR}" "${STATE_DIR}"
           echo "STATE_DIR=$(du -sh "${STATE_DIR}" 2>/dev/null | cut -f1 || echo 0)"
 
       - name: Ensure postgres client
@@ -643,6 +647,19 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
+          # 关键：打包缓存前必须先停掉 app。STATE_DIR 内含 APP_DATA_DIR
+          # (.app-state/data)，agent 运行时会实时写 data/tasks/<id>。
+          # cache/save 用 tar 打包 STATE_DIR 时若撞上正在写的文件会报
+          # "file changed as we read it" -> 整个缓存保存失败 -> 下一轮换
+          # 只能从旧快照恢复 -> 新任务丢失（反复发生的真正根因）。
+          # 停掉 app 让所有写入停止，tar 就能完整打包。
+          if [ -f /tmp/app.pid ]; then
+            kill "$(cat /tmp/app.pid)" 2>/dev/null || true
+          fi
+          pkill -f '/tmp/app-bin' 2>/dev/null || true
+          sleep 3
+          echo "app 已停止，写入已落定"
+
           mkdir -p "${STATE_DIR}" "${GITHUB_WORKSPACE}/.ci-state"
           if command -v pg_dump >/dev/null 2>&1; then
             pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz" || \
