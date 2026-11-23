@@ -173,6 +173,13 @@ jobs:
       - name: Prepare state dirs
         run: |
           mkdir -p "${APP_DATA_DIR}" "${STATE_DIR}"
+          # 证据文件（db/task_artifacts + evidence blobs）随缓存在 STATE_DIR/data 里，
+          # 但 app 实际读 APP_DATA_DIR(.app-work/data)。恢复时把证据同步回 app 目录，
+          # 否则数据库里 artifact 记录还在、磁盘文件没了 -> "artifact file missing"。
+          if [ -d "${STATE_DIR}/data" ]; then
+            cp -a "${STATE_DIR}/data/." "${APP_DATA_DIR}/" 2>/dev/null || true
+            echo "证据文件已从缓存恢复到 ${APP_DATA_DIR}: $(du -sh "${APP_DATA_DIR}" 2>/dev/null | cut -f1)"
+          fi
           echo "STATE_DIR=$(du -sh "${STATE_DIR}" 2>/dev/null | cut -f1 || echo 0)"
 
       - name: Ensure postgres client
@@ -659,6 +666,15 @@ jobs:
           pkill -f '/tmp/app-bin' 2>/dev/null || true
           sleep 3
           echo "app 已停止，写入已落定"
+
+          # 证据文件（task artifacts / evidence blobs）持久化：app 已停、无写入，
+          # 把 APP_DATA_DIR 整个复制进 STATE_DIR/data，随 cache 一起跨轮换保存。
+          # 任务不删 -> 下一轮换 Prepare state dirs 会把它同步回 app 目录 -> 文件不丢。
+          mkdir -p "${STATE_DIR}/data"
+          if [ -d "${APP_DATA_DIR}" ]; then
+            cp -a "${APP_DATA_DIR}/." "${STATE_DIR}/data/" 2>/dev/null || true
+            echo "证据文件已存入缓存目录: $(du -sh "${STATE_DIR}/data" 2>/dev/null | cut -f1)"
+          fi
 
           mkdir -p "${STATE_DIR}" "${GITHUB_WORKSPACE}/.ci-state"
           if command -v pg_dump >/dev/null 2>&1; then
