@@ -24,7 +24,8 @@ jobs:
         with:
           path: /tmp/diag
           key: ${{ inputs.cache_key }}
-          restore-keys: ""
+          restore-keys: |
+            app-state-
 
       - name: Dump profiles from snapshot
         env:
