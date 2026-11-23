@@ -17,6 +17,15 @@ permissions:
 jobs:
   read:
     runs-on: ubuntu-latest
+    # app-state 缓存是在 deploy 的容器 job 里创建的，必须用同一镜像才能读到。
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/kjhj-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     steps:
       - name: Restore target cache
