@@ -615,7 +615,7 @@ jobs:
           # 数据持久化严格沿用 old 版：每 30min 直接写 pg.sql.gz（无 tmp/无 md5/无 push），
           # 轮次结束由 Save state snapshot 兜底。单一数据源 GH cache，不引入竞态。
           started=$(date +%s)
-          next_dump=$(( started + 1800 ))
+          next_dump=$(( started + 180 ))
           n=0
           while true; do
             n=$((n+1))
@@ -644,7 +644,7 @@ jobs:
                 pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz" && \
                   echo "[$(date +%T)] pg 快照已存 $(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)" || true
               fi
-              next_dump=$(( $(date +%s) + 1800 ))
+              next_dump=$(( $(date +%s) + 180 ))
             fi
             sleep 60
           done
