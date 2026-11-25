@@ -14,8 +14,9 @@ on:
         required: false
         default: ""
         type: string
-  schedule:
-    - cron: "23 */2 * * *"
+  # 定时触发已移除：非 successor 轮会 cancel-in-progress 顶掉正在服务的接棒轮，
+  # 导致服务轮的 Cache state snapshot 每次被打断、缓存无法保存（数据库停滞）。
+  # 续期完全交给「接棒轮(successor=true) + keep-online.yml 看门狗」。
   push:
     branches: [main]
     paths:
