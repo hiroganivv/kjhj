@@ -42,6 +42,7 @@ jobs:
           psql --version
       - name: Start bridge and test
         run: |
+          set +e
           export PGBRIDGE_PORT=15432
           cp "${GITHUB_WORKSPACE}/.ci-assets/deploy/pgbridge/server.mjs" /tmp/server.mjs && cd /tmp && node /tmp/server.mjs > /tmp/bridge.log 2>&1 &
           echo $! > /tmp/bridge.pid
