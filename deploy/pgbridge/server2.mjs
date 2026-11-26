@@ -71,6 +71,14 @@ const server = net.createServer((sock) => {
     if (type === 'Q') {
       const sql = payload.subarray(0, payload.length - 1).toString('utf8');
       log('QUERY:', sql.slice(0, 100));
+      // pgx ping sends "-- ping" (comment only). Treat as empty OK with a
+      // valid empty result set so the driver considers the connection healthy.
+      if (!sql.trim() || /^--/.test(sql.trim()) || /^\/\*/.test(sql.trim())) {
+        sock.write(RowDescription(['?column?']));
+        sock.write(CommandComplete('SELECT 0'));
+        sock.write(ReadyForQuery());
+        return;
+      }
       try {
         const action = isRead(sql) ? 'query' : 'exec';
         const r = await gateway(action, { sql });
@@ -118,7 +126,7 @@ const server = net.createServer((sock) => {
         buf = buf.subarray(len);
         // auth ok + params + ready
         sock.write(AuthenticationOk());
-        sock.write(ParameterStatus('server_version', '16.3 (pgbridge)'));
+        sock.write(ParameterStatus('server_version', '16.3'));
         sock.write(ParameterStatus('client_encoding', 'UTF8'));
         sock.write(ParameterStatus('DateStyle', 'ISO, MDY'));
         sock.write(ParameterStatus('standard_conforming_strings', 'on'));
