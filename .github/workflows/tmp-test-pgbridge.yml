@@ -1,0 +1,62 @@
+name: tmp test pgbridge
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/kjhj-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 15
+    env:
+      PG_PANEL_URL: ${{ secrets.PG_PANEL_URL }}
+      PG_PANEL_TOKEN: ${{ secrets.PG_PANEL_TOKEN }}
+      PG_DB_USER: ${{ secrets.PG_DB_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: .ci-assets
+          fetch-depth: 1
+      - name: Verify credentials masked
+        run: |
+          echo "::add-mask::${PG_PANEL_URL}"
+          echo "::add-mask::${PG_PANEL_TOKEN}"
+          echo "url set: $([ -n "$PG_PANEL_URL" ] && echo yes || echo no)"
+          echo "token set: $([ -n "$PG_PANEL_TOKEN" ] && echo yes || echo no)"
+          node --version
+          npm --version
+      - name: Install pg-gateway + psql client
+        run: |
+          cd /tmp
+          npm init -y >/dev/null 2>&1
+          npm install pg-gateway@0.3.0-beta.4 pg --silent 2>&1 | tail -3
+          (command -v psql >/dev/null 2>&1) || (apt-get update -qq && apt-get install -y -qq postgresql-client >/dev/null 2>&1)
+          psql --version
+      - name: Start bridge and test
+        run: |
+          export PGBRIDGE_PORT=15432
+          NODE_PATH=/tmp/node_modules node "${GITHUB_WORKSPACE}/.ci-assets/deploy/pgbridge/server.mjs" > /tmp/bridge.log 2>&1 &
+          echo $! > /tmp/bridge.pid
+          sleep 5
+          echo "=== bridge log ==="; cat /tmp/bridge.log
+          echo "=== TEST 1: psql select ==="
+          PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 -c "select 1 as n, 'hi' as s" 2>&1 | head -20
+          echo "=== TEST 2: psql version query ==="
+          PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 -c "select version()" 2>&1 | head -10
+          echo "=== TEST 3: node pg client ==="
+          cd /tmp && NODE_PATH=/tmp/node_modules node -e "
+            const {Client}=require('pg');
+            (async()=>{const c=new Client({host:'127.0.0.1',port:15432,user:'xjiejie_ggg123',password:'x',database:'xjiejie_ggg123'});
+            try{await c.connect();const r=await c.query('select 42 as answer');console.log('NODE_PG_OK',JSON.stringify(r.rows));await c.end();}
+            catch(e){console.log('NODE_PG_ERR',e.message);process.exit(1);}})();
+          " 2>&1 | head -10
+          echo "=== bridge log after ==="; tail -20 /tmp/bridge.log
+          kill $(cat /tmp/bridge.pid) 2>/dev/null || true
