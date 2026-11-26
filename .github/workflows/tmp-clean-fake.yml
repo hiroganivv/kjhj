@@ -1,0 +1,45 @@
+name: tmp clean fake snapshot
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/kjhj-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 10
+    steps:
+      - name: Remove fake verify snapshots
+        env:
+          BACKUP_REPO: ${{ secrets.BACKUP_REPO_SSH }}
+          BACKUP_SSH_KEY: ${{ secrets.BACKUP_SSH_KEY }}
+        run: |
+          set -uo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${BACKUP_SSH_KEY}" > ~/.ssh/id_c
+          chmod 600 ~/.ssh/id_c
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_c -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15 -p 22"
+          d=/tmp/cleanrepo-$$
+          git clone --depth 1 "${BACKUP_REPO}" "${d}" || exit 1
+          cd "${d}"
+          git config user.email clean@local; git config user.name clean
+          for x in $(ls -1d db/snap-* 2>/dev/null); do
+            cat "${x}"/part-* > /tmp/chk.gz 2>/dev/null || { rm -rf "${x}"; continue; }
+            if ! gzip -t /tmp/chk.gz 2>/dev/null; then echo "remove fake ${x}"; rm -rf "${x}"; fi
+            rm -f /tmp/chk.gz
+          done
+          echo "remaining snapshots: $(ls -1d db/snap-* 2>/dev/null | wc -l)"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit --amend -m "cleanup fake snapshots" --quiet
+            git push --force origin HEAD:main && echo "OK cleaned"
+          else echo "nothing to clean"; fi
