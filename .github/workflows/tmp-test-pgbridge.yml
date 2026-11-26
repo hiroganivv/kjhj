@@ -49,9 +49,9 @@ jobs:
           sleep 5
           echo "=== bridge log ==="; cat /tmp/bridge.log
           echo "=== TEST 1: psql select ==="
-          PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 -c "select 1 as n, 'hi' as s" 2>&1 | head -20
+          timeout 20 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "select 1 as n, 'hi' as s" 2>&1 | head -20
           echo "=== TEST 2: psql version query ==="
-          PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 -c "select version()" 2>&1 | head -10
+          timeout 20 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "select version()" 2>&1 | head -10
           echo "=== TEST 3: node pg client ==="
           cd /tmp && NODE_PATH=/tmp/node_modules node -e "
             const {Client}=require('pg');
