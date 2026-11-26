@@ -97,7 +97,7 @@ const server = net.createServer((sock) => {
   async function handleMessage(type, payload) {
     if (type === 'Q') {
       const sql = payload.subarray(0, payload.length - 1).toString('utf8');
-      log('QUERY:', sql.slice(0, 100));
+      log('QUERY len=', sql.length, 'head=', sql.slice(0, 80).replace(/\n/g,' '));
       // pgx ping sends "-- ping" (comment only). Treat as empty OK with a
       // valid empty result set so the driver considers the connection healthy.
       if (!sql.trim() || /^--/.test(sql.trim()) || /^\/\*/.test(sql.trim())) {
