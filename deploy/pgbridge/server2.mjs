@@ -83,7 +83,12 @@ const server = net.createServer((sock) => {
           for (const row of rows) sock.write(DataRow(cols.map((c) => row[c])));
           sock.write(CommandComplete(`SELECT ${rows.length}`));
         } else {
-          sock.write(CommandComplete(`${sql.trim().split(/\s+/)[0].toUpperCase()} ${r.affected ?? 0}`));
+          const verb = sql.trim().split(/\s+/)[0].toUpperCase();
+          // psql/pgx expect "INSERT 0 n" / "UPDATE n" / "DELETE n"
+          const tag = verb === 'INSERT' ? `INSERT 0 ${r.affected ?? 0}`
+            : (verb === 'UPDATE' || verb === 'DELETE') ? `${verb} ${r.affected ?? 0}`
+            : `${verb} ${r.affected ?? 0}`;
+          sock.write(CommandComplete(tag));
         }
       } catch (err) {
         sock.write(ErrorResponse(String(err.message || err)));
