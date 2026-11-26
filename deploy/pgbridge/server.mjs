@@ -105,11 +105,9 @@ function classifySQL(sql) {
 const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
     serverVersion: '16.3 (pgbridge)',
-    authMode: 'cleartextPassword',
+    authMode: 'none',
     async validateCredentials(credentials) {
-      console.error('AUTH attempt:', credentials && credentials.authMode);
-      // 网关 token 才是真凭据；这里接受任意密码，由网络隔离保护（仅监听 127.0.0.1）
-      return credentials.authMode === 'cleartextPassword';
+      return true;
     },
     async onAuthenticated(state) {
       console.error('AUTH OK, client:', JSON.stringify(state.clientInfo));
