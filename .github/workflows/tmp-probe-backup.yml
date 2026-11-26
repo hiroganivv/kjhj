@@ -1,0 +1,48 @@
+name: tmp probe backup repo
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/kjhj-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 8
+    steps:
+      - name: Probe backup repo access
+        env:
+          BACKUP_KEY: ${{ secrets.BACKUP_SSH_KEY }}
+          BACKUP_REPO: ${{ secrets.BACKUP_REPO_SSH }}
+        run: |
+          set -uo pipefail
+          echo "BACKUP_REPO present: $([ -n "${BACKUP_REPO:-}" ] && echo yes || echo no)"
+          echo "BACKUP_KEY present: $([ -n "${BACKUP_KEY:-}" ] && echo yes || echo no)"
+          echo "repo host/path shape: $(printf '%s' "${BACKUP_REPO:-}" | sed -E 's#(git@[^:]+:)[^/]+/.*#\1<owner>/<repo>#')"
+          mkdir -p ~/.ssh
+          printf '%s\n' "${BACKUP_KEY}" > ~/.ssh/id_bk
+          chmod 600 ~/.ssh/id_bk
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+          echo "--- try ssh.github.com:443 (as before) ---"
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_bk -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=12 -p 443 -H ssh.github.com"
+          timeout 45 git ls-remote "${BACKUP_REPO}" 2>&1 | head -5 || echo "ls-remote port443 FAILED"
+          echo "--- try github.com:22 ---"
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_bk -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=12 -p 22"
+          timeout 45 git ls-remote "${BACKUP_REPO}" 2>&1 | head -5 || echo "ls-remote port22 FAILED"
+          echo "--- clone test (port that works) ---"
+          d=/tmp/probe-bk-$$
+          timeout 60 git clone --depth 1 "${BACKUP_REPO}" "${d}" 2>&1 | tail -4 || echo "clone FAILED"
+          if [ -d "${d}" ]; then
+            echo "clone OK; files:"; ls -la "${d}" | head -12
+            echo "existing snapshot dirs:"; ls -1 "${d}" | grep -iE '^snap|backup' | head -10 || echo none
+          fi
