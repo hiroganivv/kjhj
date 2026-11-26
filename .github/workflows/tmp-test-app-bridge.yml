@@ -1,0 +1,76 @@
+name: tmp test app via bridge
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/kjhj-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 20
+    env:
+      PG_PANEL_URL: ${{ secrets.PG_PANEL_URL }}
+      PG_PANEL_TOKEN: ${{ secrets.PG_PANEL_TOKEN }}
+      PG_DB_USER: ${{ secrets.PG_DB_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: .ci-assets
+          fetch-depth: 1
+      - name: Checkout app source
+        uses: actions/checkout@v4
+        with:
+          repository: chu0119/Pojun
+          ref: main
+          path: src
+          fetch-depth: 1
+      - name: Start bridge
+        run: |
+          echo "::add-mask::${PG_PANEL_URL}"; echo "::add-mask::${PG_PANEL_TOKEN}"
+          export PGBRIDGE_PORT=15432
+          node "${GITHUB_WORKSPACE}/.ci-assets/deploy/pgbridge/server2.mjs" > /tmp/bridge.log 2>&1 < /dev/null &
+          echo $! > /tmp/bridge.pid
+          sleep 3
+          cat /tmp/bridge.log
+      - name: Build app
+        run: |
+          cd "${GITHUB_WORKSPACE}/src"
+          go mod download 2>&1 | tail -2
+          CGO_ENABLED=0 go build -tags embedui -trimpath -o /tmp/app-bin ./cmd/pojun 2>&1 | tail -5
+          ls -la /tmp/app-bin
+      - name: Launch app via bridge DSN
+        run: |
+          set +e
+          export POJUN_PG_DSN="postgres://${PG_DB_USER}:x@127.0.0.1:15432/${PG_DB_USER}?sslmode=disable&default_query_exec_mode=simple_protocol"
+          mkdir -p /tmp/appdata
+          cd "${GITHUB_WORKSPACE}/src"
+          nohup /tmp/app-bin -addr :18899 -data /tmp/appdata > /tmp/app.log 2>&1 < /dev/null &
+          echo $! > /tmp/app.pid
+          echo "waiting for app health..."
+          for i in $(seq 1 40); do
+            c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:18899/api/health 2>/dev/null)
+            echo "try $i health=$c"
+            [ "$c" = "200" ] && break
+            sleep 2
+          done
+          echo "=== app health body ==="
+          curl -s --max-time 5 http://127.0.0.1:18899/api/health 2>&1 | head -c 300
+          echo
+          echo "=== app log (last 60) ==="
+          tail -60 /tmp/app.log
+          echo "=== bridge log (last 40) ==="
+          tail -40 /tmp/bridge.log
+          echo "=== table count in permanent DB via bridge ==="
+          node -e "
+            const net=require('net');
+            const {Client}=require('/tmp/node_modules/pg');
+          " 2>/dev/null || true
+          kill $(cat /tmp/app.pid) 2>/dev/null; kill $(cat /tmp/bridge.pid) 2>/dev/null
