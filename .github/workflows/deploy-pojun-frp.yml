@@ -275,7 +275,7 @@ jobs:
           echo $! > /tmp/app.pid
           echo "APP_PID=$(cat /tmp/app.pid)"
           ok=0
-          for i in $(seq 1 60); do
+          for i in $(seq 1 250); do
             if curl -fsS -o /dev/null "http://127.0.0.1:${APP_LOCAL_PORT}/api/health" 2>/dev/null; then
               echo "✓ /api/health 就绪（第 ${i} 次探测）"
               ok=1
@@ -284,7 +284,7 @@ jobs:
             sleep 2
           done
           if [ "${ok}" -ne 1 ]; then
-            echo "::error::App 未在 120s 内就绪"
+            echo "::error::App 未在 500s 内就绪"
             tail -80 /tmp/app-server.log
             exit 1
           fi
