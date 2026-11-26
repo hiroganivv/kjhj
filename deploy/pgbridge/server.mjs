@@ -107,10 +107,16 @@ const server = net.createServer((socket) => {
     serverVersion: '16.3 (pgbridge)',
     authMode: 'cleartextPassword',
     async validateCredentials(credentials) {
+      console.error('AUTH attempt:', credentials && credentials.authMode);
       // 网关 token 才是真凭据；这里接受任意密码，由网络隔离保护（仅监听 127.0.0.1）
       return credentials.authMode === 'cleartextPassword';
     },
+    async onAuthenticated(state) {
+      console.error('AUTH OK, client:', JSON.stringify(state.clientInfo));
+    },
     async onMessage(data, { isAuthenticated }) {
+      const t0 = String.fromCharCode(data[0]);
+      console.error('MSG type=', t0, 'len=', data.length, 'auth=', isAuthenticated);
       if (!isAuthenticated) return false;
       // data is a raw wire Buffer. We only handle Simple Query ('Q').
       const type = String.fromCharCode(data[0]);
@@ -151,6 +157,11 @@ const server = net.createServer((socket) => {
   });
   socket.on('error', () => {});
 });
+
+process.on('uncaughtException', (e) => console.error('UNCAUGHT:', e && e.stack || e));
+process.on('unhandledRejection', (e) => console.error('UNHANDLED:', e && e.stack || e));
+
+server.on('error', (e) => console.error('SERVER ERR:', e && e.stack || e));
 
 server.listen(LISTEN_PORT, '127.0.0.1', () => {
   console.log(`pgbridge listening on 127.0.0.1:${LISTEN_PORT} -> PHP gateway`);
