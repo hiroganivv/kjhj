@@ -44,14 +44,14 @@ jobs:
         run: |
           set +e
           export PGBRIDGE_PORT=15432
-          cp "${GITHUB_WORKSPACE}/.ci-assets/deploy/pgbridge/server.mjs" /tmp/server.mjs && cd /tmp && node /tmp/server.mjs > /tmp/bridge.log 2>&1 &
+          node "${GITHUB_WORKSPACE}/.ci-assets/deploy/pgbridge/server2.mjs" > /tmp/bridge.log 2>&1 < /dev/null &
           echo $! > /tmp/bridge.pid
           sleep 5
           echo "=== bridge log ==="; cat /tmp/bridge.log
           echo "=== TEST 1: psql select ==="
-          timeout 20 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "select 1 as n, 'hi' as s" 2>&1 | head -20
+          timeout 12 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "select 1 as n, 'hi' as s" 2>&1 | head -20
           echo "=== TEST 2: psql version query ==="
-          timeout 20 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "select version()" 2>&1 | head -10
+          timeout 12 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "select version()" 2>&1 | head -10
           echo "=== TEST 3: node pg client ==="
           cd /tmp && NODE_PATH=/tmp/node_modules node -e "
             const {Client}=require('pg');
