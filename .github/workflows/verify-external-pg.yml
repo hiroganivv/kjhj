@@ -1,0 +1,23 @@
+name: verify external pg
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/kjhj-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 10
+    steps:
+      - name: external auth check
+        shell: bash
+        run: |
+          set +e
+          OUT=$(PGPASSWORD="$EXTPW" psql -h 203.195.195.52 -p 65533 -U postgres -d postgres -tAc 'select current_user' -w 2>&1)
+          if [ $? -eq 0 ]; then echo "EXTERNAL_PG_AUTH_OK user=$OUT"; else echo "EXTERNAL_PG_AUTH_FAIL $(echo "$OUT"|head -1)"; fi
+        env:
+          EXTPW: ${{ secrets.EXTERNAL_PG_PASSWORD }}
