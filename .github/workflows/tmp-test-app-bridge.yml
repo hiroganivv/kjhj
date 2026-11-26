@@ -44,7 +44,7 @@ jobs:
         run: |
           cd "${GITHUB_WORKSPACE}/src"
           go mod download 2>&1 | tail -2
-          CGO_ENABLED=0 go build -tags embedui -trimpath -o /tmp/app-bin ./cmd/pojun 2>&1 | tail -5
+          CGO_ENABLED=0 go build -trimpath -o /tmp/app-bin ./cmd/pojun 2>&1 | tail -5
           ls -la /tmp/app-bin
       - name: Launch app via bridge DSN
         run: |
