@@ -60,6 +60,33 @@ async function gateway(action, extra = {}) {
 }
 const isRead = (sql) => /^(select|with|show|explain|values|table)\b/i.test(sql.trim()) || /\breturning\b/i.test(sql);
 
+// Split a multi-statement SQL script into individual statements.
+// Respect $$...$$ dollar-quoted function bodies (semicolons inside are NOT separators).
+function splitStatements(sql) {
+  const out = [];
+  let cur = '', inDollar = false, dollarTag = '';
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (!inDollar && ch === '$') {
+      const m = /^\$([A-Za-z0-9_]*)\$/.exec(sql.slice(i));
+      if (m) { inDollar = true; dollarTag = m[0]; cur += m[0]; i += m[0].length - 1; continue; }
+    }
+    if (inDollar && sql.startsWith(dollarTag, i)) {
+      cur += dollarTag; inDollar = false; i += dollarTag.length - 1; continue;
+    }
+    if (!inDollar && ch === ';') {
+      const s = cur.trim();
+      // skip pure comment chunks
+      if (s && s.split('\n').some((l) => l.trim() && !/^--/.test(l.trim()))) out.push(s);
+      cur = ''; continue;
+    }
+    cur += ch;
+  }
+  const tail = cur.trim();
+  if (tail && tail.split('\n').some((l) => l.trim() && !/^--/.test(l.trim()))) out.push(tail);
+  return out;
+}
+
 // ---------- connection state machine ----------
 const STARTUP_DONE = 1, SSL_SENT = 2;
 const server = net.createServer((sock) => {
@@ -80,22 +107,32 @@ const server = net.createServer((sock) => {
         return;
       }
       try {
-        const action = isRead(sql) ? 'query' : 'exec';
-        const r = await gateway(action, { sql });
-        if (!r.ok) {
-          sock.write(ErrorResponse(r.error || 'gateway error'));
-        } else if (action === 'query') {
-          const rows = r.rows || [];
+        const stmts = splitStatements(sql);
+        // Multi-statement script (e.g. schema migration): run each separately,
+        // return only the last statement's result (pgx/simple-protocol semantics).
+        const scripts = stmts.length > 1 ? stmts : [sql];
+        let lastResult = null, lastSQL = sql, failed = null;
+        for (const stmt of scripts) {
+          const action = isRead(stmt) ? 'query' : 'exec';
+          const r = await gateway(action, { sql: stmt });
+          if (!r.ok) {
+            log('STATEMENT FAILED:', stmt.slice(0, 80), '->', r.error);
+            failed = r.error; break;
+          }
+          lastResult = { r, action }; lastSQL = stmt;
+        }
+        if (failed) {
+          sock.write(ErrorResponse(failed));
+        } else if (lastResult && lastResult.action === 'query') {
+          const rows = lastResult.r.rows || [];
           const cols = rows.length ? Object.keys(rows[0]) : ['?column?'];
           sock.write(RowDescription(cols));
           for (const row of rows) sock.write(DataRow(cols.map((c) => row[c])));
           sock.write(CommandComplete(`SELECT ${rows.length}`));
         } else {
-          const verb = sql.trim().split(/\s+/)[0].toUpperCase();
-          // psql/pgx expect "INSERT 0 n" / "UPDATE n" / "DELETE n"
-          const tag = verb === 'INSERT' ? `INSERT 0 ${r.affected ?? 0}`
-            : (verb === 'UPDATE' || verb === 'DELETE') ? `${verb} ${r.affected ?? 0}`
-            : `${verb} ${r.affected ?? 0}`;
+          const verb = lastSQL.trim().split(/\s+/)[0].toUpperCase();
+          const tag = verb === 'INSERT' ? `INSERT 0 ${lastResult?.r?.affected ?? 0}`
+            : `${verb} ${lastResult?.r?.affected ?? 0}`;
           sock.write(CommandComplete(tag));
         }
       } catch (err) {
