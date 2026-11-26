@@ -1,0 +1,83 @@
+name: tmp verify backup chain
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/kjhj-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: .ci-assets
+          fetch-depth: 1
+      - name: Verify backup repo push / shards / prune
+        env:
+          BACKUP_REPO: ${{ secrets.BACKUP_REPO_SSH }}
+          BACKUP_SSH_KEY: ${{ secrets.BACKUP_SSH_KEY }}
+        run: |
+          set -uo pipefail
+          echo "::add-mask::${BACKUP_REPO}"
+          echo "::add-mask::${BACKUP_SSH_KEY}"
+          mkdir -p ~/.ssh
+          printf '%s\n' "${BACKUP_SSH_KEY}" > ~/.ssh/id_v
+          chmod 600 ~/.ssh/id_v
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_v -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15 -p 22"
+          d=/tmp/vrepo-$$
+          timeout 300 git clone --depth 1 "${BACKUP_REPO}" "${d}" || { echo "clone FAIL"; exit 1; }
+          cd "${d}"
+          git config user.email verify@local; git config user.name verify
+          # 造 5MB 假快照，分片 1MB，模拟真实结构
+          ts=$(date -u +%Y%m%d%H%M%S)
+          mkdir -p "db/snap-${ts}"
+          head -c 5242880 /dev/urandom > /tmp/fake.gz
+          sha256sum /tmp/fake.gz | cut -d' ' -f1 > "db/snap-${ts}/sha256"
+          split -b 1m -d -a 3 /tmp/fake.gz "db/snap-${ts}/part-"
+          echo "${ts}" > "db/snap-${ts}/complete"
+          for old in $(ls -1d db/snap-* 2>/dev/null | sort | head -n -5); do rm -rf "${old}"; done
+          git add -A
+          git commit --amend -m "verify ${ts}" --quiet
+          if timeout 300 git push --force origin HEAD:main; then
+            echo "✓ PUSH OK ${ts}"
+          else
+            echo "::error::PUSH FAILED"; exit 1
+          fi
+          echo "shards: $(ls -1 db/snap-${ts}/part-* | wc -l)"
+          echo "snapshot dirs now: $(ls -1d db/snap-* | wc -l)"
+      - name: Verify restore merge + sha256
+        env:
+          BACKUP_REPO: ${{ secrets.BACKUP_REPO_SSH }}
+          BACKUP_SSH_KEY: ${{ secrets.BACKUP_SSH_KEY }}
+        run: |
+          set -uo pipefail
+          echo "::add-mask::${BACKUP_REPO}"
+          echo "::add-mask::${BACKUP_SSH_KEY}"
+          mkdir -p ~/.ssh
+          printf '%s\n' "${BACKUP_SSH_KEY}" > ~/.ssh/id_v
+          chmod 600 ~/.ssh/id_v
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_v -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15 -p 22"
+          d=/tmp/vrestore-$$
+          timeout 300 git clone --depth 1 "${BACKUP_REPO}" "${d}" || exit 1
+          latest=$(ls -1d "${d}"/db/snap-* 2>/dev/null | sort -r | while read x; do [ -f "$x/complete" ] && echo "$x" && break; done | head -1)
+          echo "latest snapshot: ${latest}"
+          [ -n "${latest}" ] || { echo "::error::no complete snapshot"; exit 1; }
+          cat "${latest}"/part-* > /tmp/merged.gz
+          got=$(sha256sum /tmp/merged.gz | cut -d' ' -f1)
+          want=$(cat "${latest}/sha256")
+          echo "sha got=${got} want=${want}"
+          [ "${got}" = "${want}" ] && echo "✓ MERGE + SHA256 OK" || { echo "::error::sha mismatch"; exit 1; }
