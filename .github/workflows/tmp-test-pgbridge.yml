@@ -43,7 +43,7 @@ jobs:
       - name: Start bridge and test
         run: |
           export PGBRIDGE_PORT=15432
-          NODE_PATH=/tmp/node_modules node "${GITHUB_WORKSPACE}/.ci-assets/deploy/pgbridge/server.mjs" > /tmp/bridge.log 2>&1 &
+          cp "${GITHUB_WORKSPACE}/.ci-assets/deploy/pgbridge/server.mjs" /tmp/server.mjs && cd /tmp && node /tmp/server.mjs > /tmp/bridge.log 2>&1 &
           echo $! > /tmp/bridge.pid
           sleep 5
           echo "=== bridge log ==="; cat /tmp/bridge.log
