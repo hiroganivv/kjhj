@@ -14,8 +14,7 @@ on:
         required: false
         default: ""
         type: string
-  # 定时触发已移除：非 successor 轮会 cancel-in-progress 顶掉正在服务的接棒轮，
-  # 导致服务轮的 Cache state snapshot 每次被打断、缓存无法保存（数据库停滞）。
+  # 定时触发已移除：非 successor 轮会顶掉正在服务的接棒轮。
   # 续期完全交给「接棒轮(successor=true) + keep-online.yml 看门狗」。
   push:
     branches: [main]
@@ -45,10 +44,8 @@ env:
   APP_LOCAL_PORT: ${{ secrets.APP_LOCAL_PORT }}
   WEB_TLS_LOCAL_PORT: "8443"
   STATE_DIR: ${{ github.workspace }}/.app-state
-  # app 的运行时数据目录必须放在 STATE_DIR 之外：STATE_DIR 会被 actions/cache
-  # 整体打包，agent 实时写 data/tasks/<id> 时 tar 报 "file changed as we read it"
-  # -> 缓存保存失败 -> 下一轮换从旧快照恢复 -> 新任务丢失（真正根因）。
-  # 该目录不参与跨轮恢复（恢复只用 STATE_DIR/pg.sql.gz），移出即可根治。
+  # app 运行时数据目录。备份脚本会把它增量镜像到私有 backup 仓库，
+  # 轮次启动时由 restore.sh 恢复回来。
   APP_DATA_DIR: ${{ github.workspace }}/.app-work/data
   NEXT_TELEMETRY_DISABLED: "1"
 
@@ -99,6 +96,9 @@ jobs:
       APP_LLM_MODEL: ${{ vars.APP_LLM_MODEL }}
       APP_LLM_BASE_URL: ${{ vars.APP_LLM_BASE_URL }}
       APP_LLM_PROXY: ${{ vars.APP_LLM_PROXY }}
+      # 实时备份（私有仓库）：每 3 分钟推送一次，只保留最新 5 份
+      BACKUP_REPO: ${{ secrets.BACKUP_REPO_SSH }}
+      BACKUP_SSH_KEY: ${{ secrets.BACKUP_SSH_KEY }}
 
     steps:
       - name: Validate configuration
@@ -115,6 +115,8 @@ jobs:
           check FRP_REMOTE_PORT  "在 Settings→Secrets 添加 FRP_REMOTE_PORT（公网 Web 端口）"
           check APP_LOCAL_PORT "在 Settings→Secrets 添加 APP_LOCAL_PORT（runner 本地 Web 端口）"
           check OOB_PORTS        "在 Settings→Secrets 添加 OOB_PORTS（回连端口，逗号分隔；不需要填 none）"
+          check BACKUP_REPO      "在 Settings→Secrets 添加 BACKUP_REPO_SSH（私有备份仓库 SSH 地址）"
+          check BACKUP_SSH_KEY   "在 Settings→Secrets 添加 BACKUP_SSH_KEY（备份仓库 deploy key 私钥）"
           if [ "${missing}" -ne 0 ]; then
             echo "::error::配置不完整，请运行 deploy/set-secrets.sh 或按 README 手工添加"
             exit 1
@@ -128,7 +130,8 @@ jobs:
           echo "${_p}_PG_DSN=${APP_PG_DSN}" >> "$GITHUB_ENV"
           echo "${_p}_SKILL_DIR=${APP_SKILL_DIR}" >> "$GITHUB_ENV"
           for v in FRP_TOKEN APP_INIT_PASSWORD ANTHROPIC_API_KEY OPENAI_API_KEY \
-                   FRP_SERVER_PORT FRP_REMOTE_PORT WEB_ALIAS_PORTS OOB_PORTS APP_LOCAL_PORT; do
+                   FRP_SERVER_PORT FRP_REMOTE_PORT WEB_ALIAS_PORTS OOB_PORTS APP_LOCAL_PORT \
+                   BACKUP_REPO BACKUP_SSH_KEY; do
             val="${!v:-}"
             [ -n "${val}" ] && echo "::add-mask::${val}"
           done
@@ -162,25 +165,24 @@ jobs:
             --assets "${GITHUB_WORKSPACE}/.ci-assets/deploy/branding"
           echo "✓ 品牌化补丁完成（登录页=/noreply/若依风格，favicon，伪装 CSS，标题）"
 
-      - name: Restore state cache
-        id: state-restore
+      - name: Restore state cache (migration bridge)
+        id: migration-cache
+        # 一次性迁移：备份仓库还没有新格式分片快照时，用旧的 GH cache 兜住当前数据。
+        # 备份仓库一旦有可用快照，restore.sh 会覆盖这份文件；此后本步骤可安全移除。
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.STATE_DIR }}
-          key: ${{ inputs.state_cache_key || format('app-state-{0}', github.run_id) }}
+          key: app-state-${{ github.run_id }}
           restore-keys: |
             app-state-
 
-      - name: Prepare state dirs
+      - name: Restore from backup repo
+        # 实时备份链路：拉最新一份完整快照（分片合并 + sha256 + gzip 校验）。
+        # 若备份仓库暂无可用快照，保留上一步 cache 恢复的 pg.sql.gz，避免空库。
         run: |
-          mkdir -p "${APP_DATA_DIR}" "${STATE_DIR}"
-          # 证据文件（db/task_artifacts + evidence blobs）随缓存在 STATE_DIR/data 里，
-          # 但 app 实际读 APP_DATA_DIR(.app-work/data)。恢复时把证据同步回 app 目录，
-          # 否则数据库里 artifact 记录还在、磁盘文件没了 -> "artifact file missing"。
-          if [ -d "${STATE_DIR}/data" ]; then
-            cp -a "${STATE_DIR}/data/." "${APP_DATA_DIR}/" 2>/dev/null || true
-            echo "证据文件已从缓存恢复到 ${APP_DATA_DIR}: $(du -sh "${APP_DATA_DIR}" 2>/dev/null | cut -f1)"
-          fi
+          set -uo pipefail
+          chmod +x "${GITHUB_WORKSPACE}/.ci-assets/deploy/restore.sh"
+          bash "${GITHUB_WORKSPACE}/.ci-assets/deploy/restore.sh"
           echo "STATE_DIR=$(du -sh "${STATE_DIR}" 2>/dev/null | cut -f1 || echo 0)"
 
       - name: Ensure postgres client
@@ -612,8 +614,10 @@ jobs:
       - name: Serve with keepalive
         run: |
           set -uo pipefail
-          # 数据持久化严格沿用 old 版：每 30min 直接写 pg.sql.gz（无 tmp/无 md5/无 push），
-          # 轮次结束由 Save state snapshot 兜底。单一数据源 GH cache，不引入竞态。
+          # 实时备份：每 3 分钟把数据库快照 + 证据文件推到私有 backup 仓库。
+          # 后台异步执行，不阻塞心跳（app/frp 崩了要能立刻重启）。
+          BK="${GITHUB_WORKSPACE}/.ci-assets/deploy/backup.sh"
+          chmod +x "${BK}"
           started=$(date +%s)
           next_dump=$(( started + 180 ))
           n=0
@@ -639,57 +643,26 @@ jobs:
             edge=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 6 "http://127.0.0.1:${APP_LOCAL_PORT}/api/health" || echo 000)
             echo "[$(date +%T)] 心跳 #${n} health=${edge} frp=$(pgrep -fc 'frpc -c /tmp/frpc.toml' || true) app=$(pgrep -fc app-bin || true)"
             if [ "$(date +%s)" -ge "${next_dump}" ]; then
-              mkdir -p "${STATE_DIR}"
-              if command -v pg_dump >/dev/null 2>&1; then
-                pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz" && \
-                  echo "[$(date +%T)] pg 快照已存 $(du -sh "${STATE_DIR}/pg.sql.gz" | cut -f1)" || true
-              fi
+              # 后台推送；backup.sh 内部用 flock 保证同一时刻只有一个推送
+              ( bash "${BK}" >> /tmp/backup.log 2>&1 ) &
+              echo "[$(date +%T)] 触发实时备份（后台）"
               next_dump=$(( $(date +%s) + 180 ))
             fi
-            sleep 60
+            sleep 30
           done
         timeout-minutes: 340
 
 
-      - name: Save state snapshot
+      - name: Final backup (synchronous)
         if: always()
+        # 轮次正常结束/被顶掉时做最后一次同步推送，保证退出前的状态也进了备份仓库。
+        # 不再使用 GH Actions cache —— 它只在轮次结束时上传，服务轮被打断就整轮数据丢失。
         run: |
           set -uo pipefail
-          # 关键：打包缓存前必须先停掉 app。STATE_DIR 内含 APP_DATA_DIR
-          # (.app-state/data)，agent 运行时会实时写 data/tasks/<id>。
-          # cache/save 用 tar 打包 STATE_DIR 时若撞上正在写的文件会报
-          # "file changed as we read it" -> 整个缓存保存失败 -> 下一轮换
-          # 只能从旧快照恢复 -> 新任务丢失（反复发生的真正根因）。
-          # 停掉 app 让所有写入停止，tar 就能完整打包。
-          if [ -f /tmp/app.pid ]; then
-            kill "$(cat /tmp/app.pid)" 2>/dev/null || true
+          BK="${GITHUB_WORKSPACE}/.ci-assets/deploy/backup.sh"
+          if [ -f "${BK}" ]; then
+            chmod +x "${BK}"
+            bash "${BK}" || echo "::warning::最终备份推送失败"
           fi
-          pkill -f '/tmp/app-bin' 2>/dev/null || true
-          sleep 3
-          echo "app 已停止，写入已落定"
-
-          # 证据文件（task artifacts / evidence blobs）持久化：app 已停、无写入，
-          # 把 APP_DATA_DIR 整个复制进 STATE_DIR/data，随 cache 一起跨轮换保存。
-          # 任务不删 -> 下一轮换 Prepare state dirs 会把它同步回 app 目录 -> 文件不丢。
-          mkdir -p "${STATE_DIR}/data"
-          if [ -d "${APP_DATA_DIR}" ]; then
-            cp -a "${APP_DATA_DIR}/." "${STATE_DIR}/data/" 2>/dev/null || true
-            echo "证据文件已存入缓存目录: $(du -sh "${STATE_DIR}/data" 2>/dev/null | cut -f1)"
-          fi
-
-          mkdir -p "${STATE_DIR}" "${GITHUB_WORKSPACE}/.ci-state"
-          if command -v pg_dump >/dev/null 2>&1; then
-            pg_dump "${APP_PG_DSN}" | gzip > "${STATE_DIR}/pg.sql.gz" || \
-              echo "::warning::pg_dump 失败，本次数据库快照缺失"
-          fi
-          cp -a "${STATE_DIR}/." "${GITHUB_WORKSPACE}/.ci-state/" 2>/dev/null || true
-          du -sh "${STATE_DIR}" 2>/dev/null || true
-
-
-      - name: Cache state snapshot
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.STATE_DIR }}
-          key: app-state-${{ github.run_id }}
-
+          echo "=== 最近备份日志 ==="
+          tail -20 /tmp/backup.log 2>/dev/null || true
