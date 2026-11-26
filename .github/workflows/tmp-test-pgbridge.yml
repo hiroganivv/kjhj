@@ -59,5 +59,13 @@ jobs:
             try{await c.connect();const r=await c.query('select 42 as answer');console.log('NODE_PG_OK',JSON.stringify(r.rows));await c.end();}
             catch(e){console.log('NODE_PG_ERR',e.message);process.exit(1);}})();
           " 2>&1 | head -10
+          echo "=== TEST 4: DDL + insert + select (table lifecycle) ==="
+          timeout 12 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "create table if not exists pgbridge_test(id serial primary key, v text)" 2>&1 | head -5
+          timeout 12 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "insert into pgbridge_test(v) values('hello')" 2>&1 | head -5
+          timeout 12 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "select * from pgbridge_test order by id desc limit 3" 2>&1 | head -8
+          echo "=== TEST 5: $1 placeholder (pgx extended style) ==="
+          timeout 12 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "select * from pgbridge_test where v = $1" 2>&1 | head -5
+          echo "=== TEST 6: pg-like catalog query ==="
+          timeout 12 env PGPASSWORD=x psql -h 127.0.0.1 -p 15432 -U xjiejie_ggg123 -d xjiejie_ggg123 sslmode=disable -c "select count(*) as n from information_schema.tables where table_schema='xjiejie_ggg123'" 2>&1 | head -6
           echo "=== bridge log after ==="; tail -20 /tmp/bridge.log
           kill $(cat /tmp/bridge.pid) 2>/dev/null || true
