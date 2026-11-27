@@ -290,6 +290,26 @@ jobs:
           fi
           curl -sS -m 5 "http://127.0.0.1:${APP_LOCAL_PORT}/api/health" || true
 
+      - name: Auto-init admin password (first deploy)
+        run: |
+          set -uo pipefail
+          TOKEN_FILE="${APP_DATA_DIR}/setup-token"
+          STATUS=$(curl -sS -m 10 "http://127.0.0.1:${APP_LOCAL_PORT}/api/auth/status" 2>/dev/null || echo '{}')
+          echo "auth status: ${STATUS}"
+          if echo "${STATUS}" | grep -q '"initialized":false'; then
+            if [ -s "${TOKEN_FILE}" ]; then
+              ST=$(tr -d '[:space:]' < "${TOKEN_FILE}")
+              echo "::add-mask::${ST}"
+              CODE=$(curl -sS -m 12 -o /tmp/init-resp.json -w '%{http_code}' -X POST "http://127.0.0.1:${APP_LOCAL_PORT}/api/auth/init" -H "Content-Type: application/json" -H "X-Setup-Token: ${ST}" -d "{\"password\":\"${APP_INIT_PASSWORD}\"}" || echo 000)
+              echo "init HTTP ${CODE}: $(cat /tmp/init-resp.json 2>/dev/null | head -c 200)"
+              [ "${CODE}" = "200" ] && echo "OK admin password auto-initialized" || echo "::warning::auto init failed, please complete setup manually"
+            else
+              echo "::warning::setup-token file missing, skip auto init"
+            fi
+          else
+            echo "OK already initialized, skip"
+          fi
+
       - name: Setup HTTPS terminator + static login (nginx)
         run: |
           set -euo pipefail
