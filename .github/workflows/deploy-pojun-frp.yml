@@ -331,6 +331,8 @@ jobs:
           pid ${TLS_DIR}/nginx.pid;
           events { worker_connections 1024; }
           http {
+            client_max_body_size 500m;
+            client_body_timeout 300s;
             access_log off;
             types {
               text/html html;
@@ -412,6 +414,7 @@ jobs:
                 proxy_set_header Upgrade \$http_upgrade;
                 proxy_set_header Connection "upgrade";
                 proxy_read_timeout 300s;
+                proxy_request_buffering off;
                 proxy_send_timeout 300s;
               }
             }
