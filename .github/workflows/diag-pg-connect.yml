@@ -1,0 +1,27 @@
+name: diag pg connect
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  c:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/kjhj-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 12
+    steps:
+      - name: connect via DSN
+        shell: bash
+        run: |
+          echo "=== DSN host ==="
+          echo "$APP_PG_DSN" | sed -E 's#^(postgres://)[^@]*@#\1***@#' 2>/dev/null || true
+          echo "=== psql via DSN ==="
+          timeout 60 psql "$APP_PG_DSN" -tAc 'select current_user, current_database()' 2>&1
+          echo "rc=$?"
+          echo "=== DNS resolve ==="
+          getent hosts $(echo "$APP_PG_DSN" | sed -E 's#.*@([^:/]+):.*#\1#') 2>&1 | head -3
+        env:
+          APP_PG_DSN: ${{ secrets.EXTERNAL_PG_DSN }}
